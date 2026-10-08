@@ -367,8 +367,8 @@ test('a session keeps the media it is about', async () => {
     assert.deepEqual(await res.json(), { rev: 3 });
 
     const [set, cleared] = await events;
-    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', media: shot });
-    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', media: null });
+    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', client: '', media: shot });
+    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', client: '', media: null });
 
     await putMedia(s.base, 'sh010', shot);
     const state = await (await fetch(`${s.base}/api/sessions/sh010`)).json();

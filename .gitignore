@@ -18,4 +18,5 @@ dist/
 
 # The sync server's sessions and packages (server/).
 server/data/
+server/config.json
 server/node_modules/

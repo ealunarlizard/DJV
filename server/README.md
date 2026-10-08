@@ -7,8 +7,14 @@ others within a moment. A session also remembers the media file its markers
 are about, so someone who joins with nothing open gets that file loaded.
 Drawings are not shared.
 
-It is one file with no dependencies beyond Node.js 22.13 or newer, which has
-SQLite built in.
+On a studio network it is also where DJV learns its place: each DJV says
+which PC it is, the server lets in the PCs the admin registered, and tells
+them where the media share is, which DJV maps to a drive. The admin manages
+this from a web page the server serves at `/admin`. See the *Studio network*
+page of the DJV documentation (`docs/lan-setup.html`) for setting one up.
+
+It is a few files (`server.js`, `config.js`, `admin.html`) with no
+dependencies beyond Node.js 22.13 or newer, which has SQLite built in.
 
 ## Running
 
@@ -25,18 +31,58 @@ SQLite module is still experimental.
 | `HOST`           | `127.0.0.1`               | The address to listen on. `0.0.0.0` for other machines to reach it. |
 | `DATA_DIR`       | `server/data`             | Where the database is kept, unless `DB_FILE` says otherwise.      |
 | `DB_FILE`        | `DATA_DIR/djv-sync.db`    | The SQLite database that holds every session.                     |
-| `DJV_SYNC_TOKEN` | (none)                    | An access token every client must give. Set it whenever `HOST` is not this machine alone. |
+| `DJV_SYNC_TOKEN` | (none)                    | An access token every client must give. Set it whenever `HOST` is not this machine alone and registration is off. |
+| `CONFIG_FILE`    | `server/config.json`      | The configuration: server name, media share, expected DJV version, and the registered clients. |
+| `ADMIN_TOKEN`    | (the file's `adminToken`) | The token the admin page asks for. Without one, the admin page only works on the server itself. |
 
 For example, for a team on the local network:
 
 ```
-HOST=0.0.0.0 DJV_SYNC_TOKEN=some-long-secret node server/server.js
+HOST=0.0.0.0 ADMIN_TOKEN=some-long-secret node server/server.js
 ```
 
-In DJV, the server address, the token and the network media folder go in the
-**Review** section of the **Settings** tool; the session is chosen in the
-**Sync** section of the **Review** tool (see the Review page of the
-documentation).
+In DJV, the server address, the token, the client ID and the drive letter go
+in the **Sync Server** section of the **Settings** tool; the session is
+chosen in the **Sync** section of the **Review** tool (see the Review page of
+the documentation).
+
+## Configuration
+
+`config.json` (copy `config.example.json` to start) holds what the server
+tells DJV and who it lets in:
+
+```json
+{
+  "name": "Dev review server",
+  "storage": { "unc": "\\\\10.0.0.5\\media" },
+  "djvVersion": "3.7.5",
+  "requireRegistration": true,
+  "adminToken": "",
+  "clients": [ { "id": "edit-bay-1", "name": "Edit bay 1" } ]
+}
+```
+
+- `storage.unc`: the read-only share with the review media. DJV maps it to
+  the drive letter set on each PC. The server never opens it.
+- `djvVersion`: the DJV version every PC should run. A PC running another is
+  warned, and flagged on the admin page. Empty to not check.
+- `requireRegistration`: only the `clients` listed may use the sessions.
+  Others are refused with 403 and wait on the admin page for approval. Off
+  when there is no configuration, so a server started without one lets in
+  whoever has the token, as before.
+- `clients`: the registered PCs, by the client ID set in each DJV.
+
+The file is read when the server starts, and written by the admin page. A
+file that cannot be read stops the server from starting rather than letting
+everyone in. Fields starting with `_` are ignored, for comments.
+
+## Admin page
+
+`http://<server>:8787/admin` lists the PCs waiting for approval, the
+registered clients (with their DJV version, address and when they were last
+seen), who is connected to which session now, the sessions, and the server
+settings. With an admin token set, it asks for it once and keeps it for the
+browser tab; without one, it only works from the server itself.
 
 DJV connects over plain HTTP. Across an untrusted network, put the server
 behind a TLS reverse proxy and reach it through a tunnel, or keep it on a
@@ -92,13 +138,25 @@ that joins a session with no media while it has a file open sets it.
 
 ### API
 
-All under `/api`. With a token set, every request but `health` needs
-`Authorization: Bearer <token>` (or `?token=<token>`, for an EventSource):
-401 without one, 403 with the wrong one.
+All under `/api`. With a token set, every request but `health` and the
+admin ones needs `Authorization: Bearer <token>` (or `?token=<token>`, for
+an EventSource): 401 without one, 403 with the wrong one.
+
+Every request says which client it comes from, in two headers:
+
+```
+X-DJV-Client: edit-bay-1
+X-DJV-Version: 3.7.5
+```
+
+With registration required, a session request from a client not registered
+is refused: 403, `{ "error", "code": "unregistered", "client" }`. `health`
+and `hello` are always answered.
 
 | Request | Body | Answer |
 |---|---|---|
 | `GET /health` | | `{ "ok": true }` |
+| `GET /hello` | | `{ "name", "serverVersion", "djvVersion", "requireRegistration", "storage": { "unc" }, "client": { "id", "name", "registered" } }` |
 | `GET /sessions` | | `{ "sessions": [{ "session", "rev", "markers", "clients", "media" }] }`, `media` being the file's name or `null` |
 | `GET /sessions/<session>` | | `{ "session", "rev", "media": {...} \| null, "markers": [...], "deleted": [ids] }` |
 | `PUT /sessions/<session>/markers/<id>` | `{ "clientId", "marker" }` | `{ "rev" }` |
@@ -121,10 +179,32 @@ Each event's data is JSON:
 { "type": "reset",  "rev": 14 }
 ```
 
-`clientId` is the client that made the change, so a client can tell its own
-changes coming back from other people's. `reset` means the changes after
-`since` are no longer kept: read the session again, and follow from there.
-A comment is written every 15 seconds to keep the stream open.
+`clientId` is the connection that made the change, so a client can tell its
+own changes coming back from other people's; it is new each time DJV
+connects, since two DJVs on one PC share a client ID. `client` is that
+client ID (the `X-DJV-Client` header), for saying who made it. `reset` means
+the changes after `since` are no longer kept: read the session again, and
+follow from there. A comment is written every 15 seconds to keep the stream
+open.
+
+### Admin API
+
+Under `/api/admin`, for the admin page. With an admin token set, every
+request needs `Authorization: Bearer <admin token>` (401 without, 403 with a
+wrong one, both with `"code": "admin-token"`); without one, only requests
+from the server itself are answered.
+
+| Request | Body | Answer |
+|---|---|---|
+| `GET /config` | | `{ "name", "storage": { "unc" }, "djvVersion", "requireRegistration", "adminTokenSet", "file" }` |
+| `PUT /config` | any of `name`, `storage`, `djvVersion`, `requireRegistration` | as `GET`; 400 for a value that cannot be used |
+| `GET /clients` | | `{ "registered": [...], "waiting": [...], "connected": [...] }` |
+| `PUT /clients/<id>` | `{ "name" }` | the client, added or renamed |
+| `DELETE /clients/<id>` | | `{ "ok": true }`, 404 for a client not registered |
+| `GET /sessions` | | as `GET /api/sessions` |
+
+Client IDs are letters, digits, `.`, `_` and `-`, up to 64 of them. The
+waiting clients and when each client was last seen are kept in memory only.
 
 ### Storage
 

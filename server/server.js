@@ -20,6 +20,11 @@
 // kept too, so that a client that was away while the server restarted can
 // still catch up rather than read everything again.
 //
+// On a studio network the server is also where DJV learns its place: each
+// DJV says which PC it is, the server lets in the ones the admin registered
+// (see config.js and the admin page), and tells them where the media share
+// is, which DJV maps to a drive.
+//
 // Nothing but Node: a server for a handful of people reviewing together
 // should start with "node server.js". Node has SQLite built in from 22.13.
 // See README.md for the protocol.
@@ -30,6 +35,15 @@ import { timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+
+import { ConfigError, ServerConfig, isValidClientId } from './config.js';
+
+const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SERVER_VERSION = JSON.parse(readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8')).version;
+
+// How many unregistered clients the admin page is shown, the most recent
+// first. A PC that asks once and goes away should not grow the list forever.
+const MAX_WAITING = 100;
 
 // A session name goes into a URL, so it is kept to what is safe there and in
 // a file name, which is where sessions were kept before the database. DJV
@@ -56,10 +70,32 @@ const HEARTBEAT_MS = 15000;
 const SCHEMA_VERSION = 1;
 
 class HttpError extends Error {
-  constructor(status, message) {
+  // What else the client is told, beside the message: a code it can act
+  // on, for one.
+  constructor(status, message, extra = {}) {
     super(message);
     this.status = status;
+    this.extra = extra;
   }
+}
+
+// Who is asking: the PC, as DJV was told to call it, and its DJV version.
+// Both come in headers so that every request carries them, the event stream
+// included.
+function identify(req) {
+  const header = (name) => {
+    const value = req.headers[name];
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  return {
+    id: header('x-djv-client'),
+    version: header('x-djv-version').slice(0, 64),
+    ip: req.socket.remoteAddress ?? '',
+  };
+}
+
+function isLoopback(address) {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 function isValidSession(name) {
@@ -386,10 +422,155 @@ export function createSyncServer(options = {}) {
   const dbFile = options.dbFile ?? path.join(dataDir, 'djv-sync.db');
   const token = options.token ?? '';
   const log = options.log ?? (() => {});
+  // The configuration as given, or read from its file, or none at all.
+  const config = options.config ??
+    (options.configFile ? ServerConfig.load(options.configFile) : new ServerConfig());
+  // The admin token from the environment wins over the file's, so that it
+  // can be kept out of a file the admin page writes.
+  const adminToken = () => options.adminToken || config.adminToken;
 
   mkdirSync(path.dirname(dbFile), { recursive: true });
   const store = new Store(dbFile);
   importJsonSessions(store, dataDir, log);
+
+  // The clients the server has heard from, by identifier: when, from where,
+  // and with which DJV, for the admin page. Those not registered are the ones
+  // waiting to be let in. Neither is kept across a restart: a PC that is
+  // still there asks again.
+  const seen = new Map();
+  const waiting = new Map();
+  // The event streams open now, with who opened them, for the admin page.
+  const streams = new Map();
+
+  function noteClient(identity) {
+    if (!identity.id) {
+      return;
+    }
+    const entry = { id: identity.id, ip: identity.ip, version: identity.version, lastSeen: new Date().toISOString() };
+    seen.set(identity.id, entry);
+    if (!config.client(identity.id) && isValidClientId(identity.id)) {
+      waiting.delete(identity.id);
+      waiting.set(identity.id, entry);
+      while (waiting.size > MAX_WAITING) {
+        waiting.delete(waiting.keys().next().value);
+      }
+    }
+  }
+
+  // With registration required, only the PCs the admin let in may use the
+  // sessions. The refusal says which PC was refused, so that DJV can tell
+  // its user what to ask the admin for.
+  function checkClient(identity) {
+    if (!config.requireRegistration || config.client(identity.id)) {
+      return;
+    }
+    const message = identity.id ?
+      `The client "${identity.id}" is not registered on this server; ask the admin to approve it.` :
+      'This server only lets in registered clients, and the request did not say which client it is.';
+    throw new HttpError(403, message, { code: 'unregistered', client: identity.id });
+  }
+
+  // The admin requests: with an admin token, whoever has it; without one,
+  // only from the server itself.
+  function checkAdmin(req) {
+    const expected = adminToken();
+    if (!expected) {
+      if (!isLoopback(req.socket.remoteAddress)) {
+        throw new HttpError(403, 'Without an admin token the server can only be managed from the server itself; set ADMIN_TOKEN.');
+      }
+      return;
+    }
+    const header = req.headers.authorization ?? '';
+    if (!header.startsWith('Bearer ')) {
+      throw new HttpError(401, 'The admin token is needed.', { code: 'admin-token' });
+    }
+    if (!tokenMatches(header.slice(7), expected)) {
+      throw new HttpError(403, 'The admin token is not right.', { code: 'admin-token' });
+    }
+  }
+
+  // The token in force may be the environment's rather than the file's.
+  function configView() {
+    return { ...config.view(), adminTokenSet: adminToken() !== '' };
+  }
+
+  function hello(identity) {
+    const client = config.client(identity.id);
+    return {
+      name: config.name,
+      serverVersion: SERVER_VERSION,
+      djvVersion: config.djvVersion,
+      requireRegistration: config.requireRegistration,
+      storage: { unc: config.unc },
+      client: {
+        id: identity.id,
+        name: client?.name ?? '',
+        registered: client !== null,
+      },
+    };
+  }
+
+  function adminClients() {
+    const connected = [...streams.values()];
+    return {
+      registered: config.clients.map((client) => ({
+        ...client,
+        ip: seen.get(client.id)?.ip ?? '',
+        version: seen.get(client.id)?.version ?? '',
+        lastSeen: seen.get(client.id)?.lastSeen ?? '',
+        connected: connected.filter((stream) => stream.client === client.id).length,
+      })),
+      waiting: [...waiting.values()].reverse(),
+      connected,
+    };
+  }
+
+  async function handleAdmin(req, res, url, parts) {
+    checkAdmin(req);
+    if (parts.length === 3 && parts[2] === 'config') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, configView());
+        return;
+      }
+      if (req.method === 'PUT') {
+        config.update(await readJson(req));
+        log(`Configuration changed from ${req.socket.remoteAddress}`);
+        sendJson(res, 200, configView());
+        return;
+      }
+    }
+    if (parts.length === 3 && parts[2] === 'clients' && req.method === 'GET') {
+      sendJson(res, 200, adminClients());
+      return;
+    }
+    if (parts.length === 3 && parts[2] === 'sessions' && req.method === 'GET') {
+      sendJson(res, 200, { sessions: listSessions() });
+      return;
+    }
+    if (parts.length === 4 && parts[2] === 'clients') {
+      const id = parts[3];
+      if (!isValidClientId(id)) {
+        throw new HttpError(400, 'A client identifier can only have letters, digits, ".", "_" and "-", up to 64 of them.');
+      }
+      if (req.method === 'PUT') {
+        const body = await readJson(req);
+        const client = config.setClient(id, typeof body?.name === 'string' ? body.name : '');
+        waiting.delete(id);
+        log(`Client "${id}" registered`);
+        sendJson(res, 200, client);
+        return;
+      }
+      if (req.method === 'DELETE') {
+        if (!config.removeClient(id)) {
+          throw new HttpError(404, `There is no client "${id}".`);
+        }
+        log(`Client "${id}" removed`);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+    }
+    throw new HttpError(404, 'Not found.');
+  }
 
   // The sessions in use, read from the database the first time they are
   // asked for. They are small, and holding them saves reading every marker
@@ -436,7 +617,7 @@ export function createSyncServer(options = {}) {
     });
   }
 
-  function openStream(req, res, session, since) {
+  function openStream(req, res, session, since, identity) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -456,10 +637,18 @@ export function createSyncServer(options = {}) {
       writeEvent(res, event);
     }
     session.clients.add(res);
+    streams.set(res, {
+      client: identity.id,
+      session: session.name,
+      ip: identity.ip,
+      version: identity.version,
+      since: new Date().toISOString(),
+    });
     const heartbeat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS);
     const close = () => {
       clearInterval(heartbeat);
       session.clients.delete(res);
+      streams.delete(res);
     };
     req.on('close', close);
     res.on('error', close);
@@ -468,7 +657,7 @@ export function createSyncServer(options = {}) {
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-DJV-Client, X-DJV-Version');
     res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -477,6 +666,18 @@ export function createSyncServer(options = {}) {
     }
 
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    if (parts[0] === 'admin' && parts.length === 1 && req.method === 'GET') {
+      // The page holds nothing of the server's: what it shows, it asks the
+      // admin requests for, which are where the token is checked.
+      const html = readFileSync(path.join(SERVER_DIR, 'admin.html'));
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': html.length,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(html);
+      return;
+    }
     if (parts[0] !== 'api') {
       throw new HttpError(404, 'Not found.');
     }
@@ -484,7 +685,21 @@ export function createSyncServer(options = {}) {
       sendJson(res, 200, { ok: true });
       return;
     }
+    if (parts[1] === 'admin') {
+      await handleAdmin(req, res, url, parts);
+      return;
+    }
     checkToken(req, url);
+
+    // Who is asking is noted before anything is refused, so that a PC the
+    // admin has not let in yet shows on the admin page, ready to approve.
+    const identity = identify(req);
+    noteClient(identity);
+    if (parts.length === 2 && parts[1] === 'hello' && req.method === 'GET') {
+      sendJson(res, 200, hello(identity));
+      return;
+    }
+    checkClient(identity);
 
     if (parts.length === 2 && parts[1] === 'sessions' && req.method === 'GET') {
       sendJson(res, 200, { sessions: listSessions() });
@@ -502,7 +717,7 @@ export function createSyncServer(options = {}) {
 
     if (parts.length === 4 && parts[3] === 'events' && req.method === 'GET') {
       const since = Number.parseInt(url.searchParams.get('since') ?? '0', 10);
-      openStream(req, res, session, Number.isFinite(since) ? since : 0);
+      openStream(req, res, session, Number.isFinite(since) ? since : 0, identity);
       return;
     }
 
@@ -512,6 +727,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'media',
           clientId: typeof body?.clientId === 'string' ? body.clientId : '',
+          client: identity.id,
           media: checkMedia(body?.media),
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -521,6 +737,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'media',
           clientId: url.searchParams.get('clientId') ?? '',
+          client: identity.id,
           media: null,
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -545,6 +762,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'upsert',
           clientId: typeof body.clientId === 'string' ? body.clientId : '',
+          client: identity.id,
           marker: { ...marker, id },
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -556,6 +774,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'delete',
           clientId: url.searchParams.get('clientId') ?? '',
+          client: identity.id,
           id,
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -567,12 +786,17 @@ export function createSyncServer(options = {}) {
 
   const server = createHttpServer((req, res) => {
     handle(req, res).catch((error) => {
-      const status = error instanceof HttpError ? error.status : 500;
+      let status = 500;
+      if (error instanceof HttpError) {
+        status = error.status;
+      } else if (error instanceof ConfigError) {
+        status = 400;
+      }
       if (status === 500) {
         log(`${req.method} ${req.url}: ${error.stack ?? error}`);
       }
       if (!res.headersSent) {
-        sendJson(res, status, { error: error.message });
+        sendJson(res, status, { error: error.message, ...(error.extra ?? {}) });
       } else {
         res.end();
       }
@@ -598,6 +822,7 @@ export function createSyncServer(options = {}) {
     server.closeAllConnections();
     return server;
   };
+  server.config = config;
   return server;
 }
 
@@ -606,15 +831,29 @@ function main() {
   // This machine only, unless asked: there are no accounts, and a token is
   // the only lock there is.
   const host = process.env.HOST ?? '127.0.0.1';
-  const dataDir = process.env.DATA_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+  const dataDir = process.env.DATA_DIR ?? path.join(SERVER_DIR, 'data');
   const dbFile = process.env.DB_FILE || undefined;
+  const configFile = process.env.CONFIG_FILE || path.join(SERVER_DIR, 'config.json');
   const token = process.env.DJV_SYNC_TOKEN ?? '';
+  const adminToken = process.env.ADMIN_TOKEN ?? '';
   const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
-  const server = createSyncServer({ dataDir, dbFile, token, log });
+  let server;
+  try {
+    server = createSyncServer({ dataDir, dbFile, configFile, token, adminToken, log });
+  } catch (error) {
+    // A configuration that cannot be read stops the server rather than
+    // start it with none: it would let in every PC the admin had not.
+    console.error(error.message);
+    process.exit(1);
+  }
   server.listen(port, host, () => {
-    log(`DJV sync server on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${token ? ', token required' : ''}`);
-    if (host !== '127.0.0.1' && host !== 'localhost' && !token) {
-      log('Warning: listening beyond this machine without a token; set DJV_SYNC_TOKEN.');
+    log(`DJV sync server ${SERVER_VERSION} on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${token ? ', token required' : ''}`);
+    log(`Configuration in ${configFile}; admin page at http://${host}:${port}/admin`);
+    if (host !== '127.0.0.1' && host !== 'localhost' && !token && !server.config.requireRegistration) {
+      log('Warning: listening beyond this machine with neither a token nor registration; set DJV_SYNC_TOKEN or "requireRegistration".');
+    }
+    if (!server.config.unc) {
+      log('No storage share is set; DJV clients will not map a drive. Set it on the admin page.');
     }
   });
   const stop = () => {
