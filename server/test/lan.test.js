@@ -249,6 +249,25 @@ test('clients and settings set on the admin page are kept in the configuration f
   }
 });
 
+test('a configuration kept in the data folder is not taken for a session', async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'djv-lan-'));
+  const configFile = path.join(dataDir, 'config.json');
+  await writeFile(configFile, JSON.stringify(studio));
+  let s = await start({ dataDir, configFile });
+  await s.stop({ keepData: true });
+  s = await start({ dataDir, configFile });
+  try {
+    // Still there, and still in force.
+    assert.equal(JSON.parse(await readFile(configFile, 'utf8')).name, 'Dev review server');
+    const { sessions } = await (await fetch(`${s.base}/api/admin/sessions`)).json();
+    assert.deepEqual(sessions, []);
+    const hello = await (await fetch(`${s.base}/api/hello`, { headers: as('edit-bay-1') })).json();
+    assert.equal(hello.client.registered, true);
+  } finally {
+    await s.stop();
+  }
+});
+
 test('a configuration that cannot be read stops the server from starting', async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'djv-lan-'));
   const configFile = path.join(dataDir, 'config.json');

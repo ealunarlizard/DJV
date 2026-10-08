@@ -408,7 +408,14 @@ function importJsonSessions(store, dataDir, log) {
       continue;
     }
     try {
-      store.import(name, JSON.parse(readFileSync(filePath, 'utf8')));
+      const json = JSON.parse(readFileSync(filePath, 'utf8'));
+      // Only what an earlier server wrote, which always has the session's
+      // name and its markers: the data folder may hold other JSON, the
+      // server's own configuration among them.
+      if (json?.session !== name || !Array.isArray(json.markers)) {
+        continue;
+      }
+      store.import(name, json);
       renameSync(filePath, `${filePath}.imported`);
       log(`Imported session "${name}" from ${file}`);
     } catch (error) {
