@@ -4,6 +4,7 @@
 #include <djv/Models/SyncModel.h>
 
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/NetworkDrive.h>
 
 #include <ftk/Core/Context.h>
 #include <ftk/Core/Format.h>
@@ -61,13 +62,86 @@ namespace djv
                 });
         }
 
+        bool isValidSyncClientId(const std::string& value)
+        {
+            if (value.empty() || value.size() > 64 || "." == value || ".." == value)
+            {
+                return false;
+            }
+            return std::all_of(
+                value.begin(),
+                value.end(),
+                [](char c)
+                {
+                    return
+                        (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') ||
+                        '.' == c || '_' == c || '-' == c;
+                });
+        }
+
+        std::string syncUnregisteredMessage(const std::string& clientId)
+        {
+            return clientId.empty() ?
+                std::string("The server only lets in registered PCs; set this PC's client ID in the Sync Server settings.") :
+                std::string(ftk::Format("This PC ({0}) is not registered on the server; ask the admin to approve it.").
+                    arg(clientId));
+        }
+
+        SyncServerInfo parseSyncServerInfo(const nlohmann::json& json)
+        {
+            SyncServerInfo out;
+            auto text = [](const nlohmann::json& object, const char* key)
+            {
+                if (!object.is_object())
+                {
+                    return std::string();
+                }
+                const auto i = object.find(key);
+                return i != object.end() && i->is_string() ? i->get<std::string>() : std::string();
+            };
+            auto flag = [](const nlohmann::json& object, const char* key)
+            {
+                if (!object.is_object())
+                {
+                    return false;
+                }
+                const auto i = object.find(key);
+                return i != object.end() && i->is_boolean() && i->get<bool>();
+            };
+            const nlohmann::json none;
+            const auto storage = json.is_object() && json.contains("storage") ? json.at("storage") : none;
+            const auto client = json.is_object() && json.contains("client") ? json.at("client") : none;
+            out.name = text(json, "name");
+            out.serverVersion = text(json, "serverVersion");
+            out.djvVersion = text(json, "djvVersion");
+            out.requireRegistration = flag(json, "requireRegistration");
+            out.storageUnc = text(storage, "unc");
+            out.clientId = text(client, "id");
+            out.clientName = text(client, "name");
+            out.registered = flag(client, "registered");
+            if (out.requireRegistration && !out.registered)
+            {
+                out.state = SyncServerState::Unregistered;
+                out.message = syncUnregisteredMessage(out.clientId);
+            }
+            else
+            {
+                out.state = SyncServerState::Ok;
+            }
+            return out;
+        }
+
         SyncMedia syncMediaFromPath(
             const std::string& path,
             const std::filesystem::path& mediaRoot)
         {
             SyncMedia out;
             const std::filesystem::path fsPath = ftk::toFileSystem(path);
-            out.pathAbsolute = reviewGenericPath(path);
+            // On a mapped drive, the share it maps: a PC that mapped the
+            // share to another letter, or not at all, still finds the file.
+            out.pathAbsolute = reviewGenericPath(toUncPath(path));
             out.name = ftk::fromFileSystem(fsPath.filename());
             out.sharedBy = reviewAuthor();
             if (!path.empty() && !mediaRoot.empty())
@@ -620,6 +694,43 @@ namespace djv
                 return ftk::Format("HTTP {0}").arg(result->status);
             }
 
+            //! Whether an answer is the server refusing an unregistered PC.
+            bool isUnregistered(const httplib::Result& result)
+            {
+                if (!result || result->status != 403)
+                {
+                    return false;
+                }
+                try
+                {
+                    const auto json = nlohmann::json::parse(result->body);
+                    return "unregistered" == json.value("code", std::string());
+                }
+                catch (const std::exception&)
+                {}
+                return false;
+            }
+
+            //! The headers every request carries: the token, and who is
+            //! asking.
+            httplib::Headers syncHeaders(const std::string& token, const SyncIdentity& identity)
+            {
+                httplib::Headers out;
+                if (!token.empty())
+                {
+                    out.emplace("Authorization", "Bearer " + token);
+                }
+                if (!identity.clientId.empty())
+                {
+                    out.emplace("X-DJV-Client", identity.clientId);
+                }
+                if (!identity.version.empty())
+                {
+                    out.emplace("X-DJV-Version", identity.version);
+                }
+                return out;
+            }
+
             //! What the main thread shares with the network threads.
             struct SyncShared
             {
@@ -629,7 +740,10 @@ namespace djv
                 ServerURL url;
                 std::string session;
                 httplib::Headers headers;
+                //! This connection, for telling our own changes coming back.
                 std::string clientId;
+                //! This PC, as the server knows it.
+                std::string clientName;
                 std::vector<Inbound> inbox;
                 std::deque<SyncOp> outbox;
                 //! The clients, so they can be stopped from the main thread
@@ -639,6 +753,78 @@ namespace djv
                 //! Ask the stream thread to read the state again.
                 bool resync = false;
             };
+        }
+
+        SyncServerInfo fetchSyncServerInfo(
+            const std::string& server,
+            const std::string& token,
+            const SyncIdentity& identity)
+        {
+            SyncServerInfo out;
+            out.server = server;
+            out.clientId = identity.clientId;
+            if (server.empty())
+            {
+                out.state = SyncServerState::Error;
+                out.message = "No sync server is set.";
+                return out;
+            }
+            const ServerURL url = splitServer(server);
+            if (0 != url.schemeHostPort.compare(0, 7, "http://"))
+            {
+                out.state = SyncServerState::Error;
+                out.message = ftk::Format("\"{0}\" is not an http:// address.").arg(server);
+                return out;
+            }
+            httplib::Client client(url.schemeHostPort);
+            client.set_connection_timeout(connectTimeout);
+            client.set_read_timeout(std::chrono::seconds(5));
+            const auto result = client.Get(url.prefix + "/api/hello", syncHeaders(token, identity));
+            if (!result)
+            {
+                out.state = SyncServerState::Unreachable;
+                out.message = ftk::Format("Cannot reach {0} ({1}).").arg(server).arg(errorMessage(result));
+                return out;
+            }
+            if (401 == result->status || 403 == result->status)
+            {
+                out.state = SyncServerState::Error;
+                out.message = 401 == result->status ?
+                    "The server needs a token; set it in the Sync Server settings." :
+                    "The server refused the token.";
+                return out;
+            }
+            if (result->status != 200)
+            {
+                // An older sync server has no hello: it is reached, it
+                // just says nothing about a share.
+                out.state = 404 == result->status ? SyncServerState::Ok : SyncServerState::Unreachable;
+                out.message = 404 == result->status ?
+                    std::string("The server is an older version that does not say where the media is.") :
+                    std::string(ftk::Format("The server answered {0}; is this a DJV sync server?").
+                        arg(errorMessage(result)));
+                return out;
+            }
+            try
+            {
+                const std::string clientId = out.clientId;
+                out = parseSyncServerInfo(nlohmann::json::parse(result->body));
+                out.server = server;
+                if (out.clientId.empty())
+                {
+                    out.clientId = clientId;
+                    if (SyncServerState::Unregistered == out.state)
+                    {
+                        out.message = syncUnregisteredMessage(clientId);
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                out.state = SyncServerState::Error;
+                out.message = ftk::Format("Unexpected reply: {0}").arg(e.what());
+            }
+            return out;
         }
 
         struct SyncModel::Private
@@ -686,11 +872,13 @@ namespace djv
                 ServerURL url;
                 std::string session;
                 httplib::Headers headers;
+                std::string clientName;
                 {
                     std::unique_lock<std::mutex> lock(shared->mutex);
                     url = shared->url;
                     session = shared->session;
                     headers = shared->headers;
+                    clientName = shared->clientName;
                 }
                 const std::string base = url.prefix + "/api/sessions/" + session;
 
@@ -745,6 +933,12 @@ namespace djv
                     else if (result && 401 == result->status)
                     {
                         status(SyncState::Error, "The server needs a token; set it in the settings.");
+                    }
+                    else if (isUnregistered(result))
+                    {
+                        // Kept trying: once the admin approves this PC, it
+                        // joins without anyone having to click again.
+                        status(SyncState::Error, syncUnregisteredMessage(clientName));
                     }
                     else if (result && 403 == result->status)
                     {
@@ -981,7 +1175,10 @@ namespace djv
             return _p->status;
         }
 
-        void SyncModel::connect(const ReviewSync& sync, const std::string& token)
+        void SyncModel::connect(
+            const ReviewSync& sync,
+            const std::string& token,
+            const SyncIdentity& identity)
         {
             FTK_P();
             disconnect();
@@ -1024,10 +1221,8 @@ namespace djv
             p.shared->url = url;
             p.shared->session = sync.session;
             p.shared->clientId = p.merger->getClientId();
-            if (!token.empty())
-            {
-                p.shared->headers.emplace("Authorization", "Bearer " + token);
-            }
+            p.shared->clientName = identity.clientId;
+            p.shared->headers = syncHeaders(token, identity);
 
             SyncStatus status;
             status.state = SyncState::Connecting;

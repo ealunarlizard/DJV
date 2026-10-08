@@ -93,6 +93,12 @@ namespace djv
             ui::ReviewSettingsWidget::create(context, settingsModel, vLayout2);
             p.bellows["Review"]->setWidget(vLayout2);
 
+            p.bellows["SyncServer"] = ftk::Bellows::create(context, "Sync Server", vLayout);
+            vLayout2 = ftk::VerticalLayout::create(context, vLayout);
+            vLayout2->setMarginRole(ftk::SizeRole::Margin);
+            ui::SyncSettingsWidget::create(context, settingsModel, app->getLanModel(), vLayout2);
+            p.bellows["SyncServer"]->setWidget(vLayout2);
+
             p.bellows["Audio"] = ftk::Bellows::create(context, "Audio", vLayout);
             vLayout2 = ftk::VerticalLayout::create(context, vLayout);
             vLayout2->setMarginRole(ftk::SizeRole::Margin);

@@ -13,6 +13,11 @@
 
 namespace djv
 {
+    namespace models
+    {
+        class LanModel;
+    }
+
     namespace ui
     {
         //! Base class for settings widgets.
@@ -201,6 +206,36 @@ namespace djv
                 const std::shared_ptr<IWidget>& parent = nullptr);
 
         private:
+            FTK_PRIVATE();
+        };
+
+        //! Sync server settings widget: the server this PC reviews with, who
+        //! it is there, and the drive the media share is mapped to.
+        class DJV_UI_API_TYPE SyncSettingsWidget : public ISettingsWidget
+        {
+            FTK_NON_COPYABLE(SyncSettingsWidget);
+
+        protected:
+            void _init(
+                const std::shared_ptr<ftk::Context>&,
+                const std::shared_ptr<models::SettingsModel>&,
+                const std::shared_ptr<models::LanModel>&,
+                const std::shared_ptr<IWidget>& parent);
+
+            SyncSettingsWidget();
+
+        public:
+            DJV_UI_API virtual ~SyncSettingsWidget();
+
+            DJV_UI_API static std::shared_ptr<SyncSettingsWidget> create(
+                const std::shared_ptr<ftk::Context>&,
+                const std::shared_ptr<models::SettingsModel>&,
+                const std::shared_ptr<models::LanModel>&,
+                const std::shared_ptr<IWidget>& parent = nullptr);
+
+        private:
+            void _driveLettersUpdate();
+
             FTK_PRIVATE();
         };
 

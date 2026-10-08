@@ -40,6 +40,7 @@
 #include <opentimelineio/stack.h>
 #include <opentimelineio/track.h>
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/LanModel.h>
 #include <djv/Models/SyncModel.h>
 #include <djv/Models/RecentFilesModel.h>
 #include <djv/Models/Review.h>
@@ -188,6 +189,7 @@ namespace djv
             std::shared_ptr<models::CommandsModel> commandsModel;
             std::shared_ptr<models::MarkersModel> markersModel;
             std::shared_ptr<models::SyncModel> syncModel;
+            std::shared_ptr<models::LanModel> lanModel;
             //! The sync session's media last opened, or tried, because
             //! nothing was open; so that a file that cannot be found is not
             //! looked for again with every change to the session.
@@ -233,7 +235,7 @@ namespace djv
             std::shared_ptr<ftk::ListObserver<models::ReviewMarker> > markersObserver;
             std::shared_ptr<ftk::ListObserver<models::ReviewAnnotation> > annotationsObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
-            std::shared_ptr<ftk::Observer<models::ReviewSettings> > syncSettingsObserver;
+            std::shared_ptr<ftk::Observer<std::string> > syncMediaRootObserver;
             std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
             std::shared_ptr<ftk::ListObserver<std::string> > drawToolsObserver;
 
@@ -652,6 +654,11 @@ namespace djv
             return _p->syncModel;
         }
 
+        const std::shared_ptr<models::LanModel>& App::getLanModel() const
+        {
+            return _p->lanModel;
+        }
+
         void App::connectSync(const models::ReviewSync& value)
         {
             FTK_P();
@@ -678,7 +685,10 @@ namespace djv
             FTK_P();
             try
             {
-                p.syncModel->connect(value, p.settingsModel->getReview().syncToken);
+                p.syncModel->connect(
+                    value,
+                    p.settingsModel->getSync().token,
+                    p.lanModel->getIdentity());
             }
             catch (const std::exception& e)
             {
@@ -723,19 +733,35 @@ namespace djv
             const std::filesystem::path path = resolveSyncMedia(exists);
             if (!exists)
             {
-                // Say where it was looked for: the folder in the settings is
-                // the likely culprit, and the path shows whether it is.
-                const std::string mediaRoot = p.settingsModel->getReview().syncMediaRoot;
+                // Say where it was looked for: the drive or the folder in the
+                // settings is the likely culprit, and the path shows which.
+                const std::string mediaRoot = p.lanModel->observeMediaRoot()->get();
+                const models::LanDriveStatus& drive = p.lanModel->observeDrive()->get();
+                std::string hint;
+                if (models::LanDriveState::Mapping == drive.state)
+                {
+                    hint = "The media drive is still being mapped; try again in a moment.";
+                }
+                else if (models::LanDriveState::Error == drive.state)
+                {
+                    hint = drive.message;
+                }
+                else if (mediaRoot.empty())
+                {
+                    hint = "Set the drive letter, or the media folder, in the Sync Server settings.";
+                }
+                else
+                {
+                    hint = ftk::Format("Check the drive letter or the media folder in the Sync Server settings (\"{0}\").").
+                        arg(mediaRoot).
+                        str();
+                }
                 _context->log(
                     "djv::app::App",
                     ftk::Format("The sync session's media \"{0}\" cannot be found at \"{1}\". {2}").
                         arg(media->name).
                         arg(ftk::fromFileSystem(path)).
-                        arg(mediaRoot.empty() ?
-                            std::string("Set the network media folder in the Review settings.") :
-                            ftk::Format("Check the network media folder in the Review settings (\"{0}\").").
-                                arg(mediaRoot).
-                                str()),
+                        arg(hint),
                     ftk::LogType::Error);
                 return;
             }
@@ -753,7 +779,7 @@ namespace djv
             }
             return models::resolveSyncMedia(
                 media.value(),
-                ftk::toFileSystem(p.settingsModel->getReview().syncMediaRoot),
+                ftk::toFileSystem(p.lanModel->observeMediaRoot()->get()),
                 exists);
         }
 
@@ -765,7 +791,7 @@ namespace djv
             {
                 media = models::syncMediaFromPath(
                     a->path.get(),
-                    ftk::toFileSystem(p.settingsModel->getReview().syncMediaRoot));
+                    ftk::toFileSystem(p.lanModel->observeMediaRoot()->get()));
             }
             p.syncModel->setLocalMedia(media);
         }
@@ -2936,6 +2962,10 @@ namespace djv
 
             p.markersModel = models::MarkersModel::create();
             p.syncModel = models::SyncModel::create(_context, p.markersModel);
+            p.lanModel = models::LanModel::create(
+                _context,
+                p.settingsModel,
+                p.appInfoModel->getVersion());
             p.annotationsModel = models::AnnotationsModel::create();
             p.drawModel = models::DrawModel::create(getSettings());
             p.reviewMarkers = ftk::ObservableList<int>::create();
@@ -3186,19 +3216,21 @@ namespace djv
                 {
                     _syncLocalMediaUpdate();
                 });
-            p.syncSettingsObserver = ftk::Observer<models::ReviewSettings>::create(
-                p.settingsModel->observeReview(),
-                [this](const models::ReviewSettings& value)
+            // The media folder: the mapped drive once it is mapped, or the
+            // folder set by hand.
+            p.syncMediaRootObserver = ftk::Observer<std::string>::create(
+                p.lanModel->observeMediaRoot(),
+                [this](const std::string& value)
                 {
                     FTK_P();
-                    if (value.syncMediaRoot == p.syncMediaRoot)
+                    if (value == p.syncMediaRoot)
                     {
                         return;
                     }
-                    p.syncMediaRoot = value.syncMediaRoot;
+                    p.syncMediaRoot = value;
                     _syncLocalMediaUpdate();
-                    // A new network media folder may be where the file that
-                    // could not be found is.
+                    // A drive just mapped, or a new media folder, may be
+                    // where the file that could not be found is.
                     p.syncAutoLoaded.reset();
                     _syncMediaUpdate(p.syncModel->observeMedia()->get());
                 });
@@ -3684,6 +3716,18 @@ namespace djv
                         _p->mainWindow->getViewport()->getZoom(),
                         value);
                 });
+
+            // On a studio network, find the sync server and map the media
+            // share, in the background: the window does not wait for either.
+            const models::SyncSettings& sync = p.settingsModel->getSync();
+            if (sync.connectOnStart && !sync.server.empty())
+            {
+                p.lanModel->start();
+            }
+            else if (!sync.driveLetter.empty() && !sync.shareUnc.empty() && sync.connectOnStart)
+            {
+                p.lanModel->mapDrive();
+            }
 
             // Apply any view state from a review opened before the window existed
             // (e.g. a ".djvr" passed on the command line).

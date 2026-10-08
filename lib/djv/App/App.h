@@ -43,6 +43,7 @@ namespace djv
         class FilesModel;
         class MarkersModel;
         class RecentFilesModel;
+        class LanModel;
         class SyncModel;
         class TimeUnitsModel;
         class ToolsModel;
@@ -133,6 +134,10 @@ namespace djv
             //! Get the sync model: the review's markers shared through a
             //! sync server.
             const std::shared_ptr<models::SyncModel>& getSyncModel() const;
+
+            //! Get the studio network model: this PC on the sync server, and
+            //! the drive the media share is mapped to.
+            const std::shared_ptr<models::LanModel>& getLanModel() const;
 
             //! Share the review's markers through a sync server session. The
             //! session is saved in the review, so whoever opens it joins too.

@@ -56,6 +56,8 @@ namespace djv
             addAction(actions["SyncDisconnect"]);
             addAction(actions["SyncShareMedia"]);
             addAction(actions["SyncLoadMedia"]);
+            addAction(actions["SyncTestServer"]);
+            addAction(actions["SyncMapDrive"]);
 
             p.recentObserver = ftk::ListObserver<ftk::Path>::create(
                 app->getRecentReviewsModel()->observeRecent(),

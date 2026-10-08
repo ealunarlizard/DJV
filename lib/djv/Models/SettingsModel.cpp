@@ -21,6 +21,38 @@ namespace djv
     namespace models
     {
 
+        std::string defaultSyncClientId()
+        {
+            // COMPUTERNAME on Windows; elsewhere the shell's idea of the host,
+            // which is often not exported, so a fixed fallback remains.
+            std::string name;
+            if (!ftk::getEnv("COMPUTERNAME", name) || name.empty())
+            {
+                if (!ftk::getEnv("HOSTNAME", name) || name.empty())
+                {
+                    name = "djv";
+                }
+            }
+            std::string out;
+            for (const char c : name)
+            {
+                const unsigned char u = static_cast<unsigned char>(c);
+                if (std::isalnum(u) || '.' == c || '_' == c || '-' == c)
+                {
+                    out.push_back(static_cast<char>(std::tolower(u)));
+                }
+                else if (!out.empty() && out.back() != '-')
+                {
+                    out.push_back('-');
+                }
+                if (out.size() >= 64)
+                {
+                    break;
+                }
+            }
+            return out.empty() ? std::string("djv") : out;
+        }
+
         FTK_ENUM_IMPL(
             ExportRenderSize,
             "Source",
@@ -117,6 +149,7 @@ namespace djv
             std::shared_ptr<ftk::Observable<MouseSettings> > mouse;
             std::shared_ptr<ftk::Observable<PlaybackSettings> > playback;
             std::shared_ptr<ftk::Observable<ReviewSettings> > review;
+            std::shared_ptr<ftk::Observable<SyncSettings> > sync;
             std::shared_ptr<ftk::Observable<StyleSettings> > style;
             std::shared_ptr<ftk::Observable<TimelineSettings> > timeline;
             std::shared_ptr<ftk::Observable<WindowSettings> > window;
@@ -186,6 +219,7 @@ namespace djv
                 { "Mouse", "/Mouse.1" },
                 { "Playback", "/Playback.1" },
                 { "Review", "/Review.1" },
+                { "Sync", "/Sync.1" },
                 { "Style", "/Style.2" },
                 { "Timeline", "/Timeline" },
                 { "Window", "/Window" },
@@ -193,6 +227,46 @@ namespace djv
                 { "FFmpegCmd", "/FFmpegCmd" },
                 { "USD", "/USD.1" },
             };
+        }
+
+        SyncSettings readSyncSettings(const std::shared_ptr<ftk::Settings>& settings)
+        {
+            SyncSettings out;
+            if (settings->contains(keys["Sync"]))
+            {
+                settings->getT(keys["Sync"], out);
+                return out;
+            }
+            // The sync server, its token and the media folder were kept with
+            // the review settings before they had a section of their own;
+            // they move here the first time.
+            nlohmann::json json;
+            if (settings->get(keys["Review"], json) && json.is_object())
+            {
+                auto text = [&json](const char* key, std::string& value)
+                {
+                    const auto i = json.find(key);
+                    if (i != json.end() && i->is_string())
+                    {
+                        value = i->get<std::string>();
+                    }
+                };
+                text("SyncServer", out.server);
+                text("SyncToken", out.token);
+                text("SyncMediaRoot", out.mediaRoot);
+            }
+            return out;
+        }
+
+        SyncSettings resetSyncSettings(const SyncSettings& value)
+        {
+            SyncSettings out;
+            out.server = value.server;
+            out.token = value.token;
+            out.clientId = value.clientId;
+            out.driveLetter = value.driveLetter;
+            out.shareUnc = value.shareUnc;
+            return out;
         }
 
         void SettingsModel::_init(
@@ -326,6 +400,8 @@ namespace djv
             settings->getT(keys["Review"], review);
             p.review = ftk::Observable<ReviewSettings>::create(review);
 
+            p.sync = ftk::Observable<SyncSettings>::create(readSyncSettings(settings));
+
             StyleSettings style;
             settings->getT(keys["Style"], style);
             p.style = ftk::Observable<StyleSettings>::create(style);
@@ -434,6 +510,7 @@ namespace djv
             p.settings->setT(keys["Mouse"], p.mouse->get());
             p.settings->setT(keys["Playback"], p.playback->get());
             p.settings->setT(keys["Review"], p.review->get());
+            p.settings->setT(keys["Sync"], p.sync->get());
             p.settings->setT(keys["Style"], p.style->get());
             p.settings->setT(keys["Timeline"], p.timeline->get());
             p.settings->setT(keys["Window"], p.window->get());
@@ -468,6 +545,7 @@ namespace djv
             setMouse(MouseSettings());
             setPlayback(PlaybackSettings());
             setReview(ReviewSettings());
+            setSync(resetSyncSettings(p.sync->get()));
             setStyle(StyleSettings());
             setTimeline(TimelineSettings());
             setWindow(WindowSettings());
@@ -715,6 +793,21 @@ namespace djv
         std::shared_ptr<ftk::IObservable<ReviewSettings> > SettingsModel::observeReview() const
         {
             return _p->review;
+        }
+
+        const SyncSettings& SettingsModel::getSync() const
+        {
+            return _p->sync->get();
+        }
+
+        std::shared_ptr<ftk::IObservable<SyncSettings> > SettingsModel::observeSync() const
+        {
+            return _p->sync;
+        }
+
+        void SettingsModel::setSync(const SyncSettings& value)
+        {
+            _p->sync->setIfChanged(value);
         }
 
         void SettingsModel::setReview(const ReviewSettings& value)
@@ -1047,9 +1140,17 @@ namespace djv
         {
             json["ShowNotes"] = value.showNotes;
             json["NoteDuration"] = value.noteDuration;
-            json["SyncServer"] = value.syncServer;
-            json["SyncToken"] = value.syncToken;
-            json["SyncMediaRoot"] = value.syncMediaRoot;
+        }
+
+        void to_json(nlohmann::json& json, const SyncSettings& value)
+        {
+            json["Server"] = value.server;
+            json["Token"] = value.token;
+            json["ClientId"] = value.clientId;
+            json["DriveLetter"] = value.driveLetter;
+            json["ShareUnc"] = value.shareUnc;
+            json["MediaRoot"] = value.mediaRoot;
+            json["ConnectOnStart"] = value.connectOnStart;
         }
 
         void to_json(nlohmann::json& json, const StyleSettings& value)
@@ -1257,14 +1358,30 @@ namespace djv
         {
             json.at("ShowNotes").get_to(value.showNotes);
             json.at("NoteDuration").get_to(value.noteDuration);
-            json.at("SyncServer").get_to(value.syncServer);
-            json.at("SyncToken").get_to(value.syncToken);
-            // Added after the others: settings saved before it are read
-            // without it, rather than losing the server and the token.
-            if (json.contains("SyncMediaRoot"))
+        }
+
+        void from_json(const nlohmann::json& json, SyncSettings& value)
+        {
+            auto read = [&json](const char* key, auto& out)
             {
-                json.at("SyncMediaRoot").get_to(value.syncMediaRoot);
-            }
+                const auto i = json.find(key);
+                if (i != json.end())
+                {
+                    try
+                    {
+                        i->get_to(out);
+                    }
+                    catch (const std::exception&)
+                    {}
+                }
+            };
+            read("Server", value.server);
+            read("Token", value.token);
+            read("ClientId", value.clientId);
+            read("DriveLetter", value.driveLetter);
+            read("ShareUnc", value.shareUnc);
+            read("MediaRoot", value.mediaRoot);
+            read("ConnectOnStart", value.connectOnStart);
         }
 
         void from_json(const nlohmann::json& json, ShortcutsSettings& value)

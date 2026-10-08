@@ -10,6 +10,7 @@
 #include <djv/Models/FilesModel.h>
 #include <djv/Models/MarkersModel.h>
 #include <djv/Models/SettingsModel.h>
+#include <djv/Models/LanModel.h>
 #include <djv/Models/SyncModel.h>
 
 #include <tlRender/Timeline/Player.h>
@@ -300,7 +301,7 @@ namespace djv
                     if (auto app = appWeak.lock())
                     {
                         models::ReviewSync sync;
-                        sync.server = app->getSettingsModel()->getReview().syncServer;
+                        sync.server = app->getSettingsModel()->getSync().server;
                         sync.session = defaultSyncSession(app);
                         if (args.is_object())
                         {
@@ -342,10 +343,36 @@ namespace djv
                     }
                 });
 
+            // The studio network: ask the server about this PC again, and map
+            // the media drive, as at start.
+            _addCommand(
+                "SyncTestServer",
+                "Ask the sync server whether this PC is registered and where "
+                "the media share is, then map the media drive.",
+                [appWeak](const nlohmann::json&)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getLanModel()->start();
+                    }
+                });
+
+            _addCommand(
+                "SyncMapDrive",
+                "Map the media drive to the share the sync server last named, "
+                "without asking the server.",
+                [appWeak](const nlohmann::json&)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getLanModel()->mapDrive();
+                    }
+                });
+
             _addCommand(
                 "SyncLoadMedia",
                 "Open the sync session's media, found through the network "
-                "media folder in the Review settings.",
+                "media folder in the Sync Server settings.",
                 [appWeak](const nlohmann::json&)
                 {
                     if (auto app = appWeak.lock())
@@ -448,6 +475,12 @@ namespace djv
             _actions["SyncLoadMedia"] = ftk::Action::create(
                 "Load Sync Media",
                 _command("SyncLoadMedia"));
+            _actions["SyncTestServer"] = ftk::Action::create(
+                "Check Sync Server",
+                _command("SyncTestServer"));
+            _actions["SyncMapDrive"] = ftk::Action::create(
+                "Map Media Drive",
+                _command("SyncMapDrive"));
             _actions["PrevFrame"] = ftk::Action::create(
                 "Previous Marker",
                 "ReviewPrev",
@@ -531,6 +564,8 @@ namespace djv
             _addShortcut("SyncDisconnect", "Disconnect sync");
             _addShortcut("SyncShareMedia", "Share the current file with sync");
             _addShortcut("SyncLoadMedia", "Load the sync media");
+            _addShortcut("SyncTestServer", "Check the sync server");
+            _addShortcut("SyncMapDrive", "Map the media drive");
             // Shift and Control on the arrows are already taken by the X10 and
             // X100 frame steps.
             _addShortcut(

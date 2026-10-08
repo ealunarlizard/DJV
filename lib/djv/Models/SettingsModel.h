@@ -292,22 +292,59 @@ namespace djv
             //! it, in seconds. The last part of that time is the fade.
             float noteDuration = 2.5F;
 
-            //! The sync server offered when connecting a review, e.g.
-            //! "http://localhost:8787".
-            std::string syncServer = "http://localhost:8787";
-
-            //! The access token the sync server asks for, if it asks for one.
-            std::string syncToken;
-
-            //! The folder on this machine where the network storage that
-            //! holds the review media is reached, e.g. "\\nas\media" or
-            //! "/Volumes/media". A sync session names its media relative to
-            //! it, so that machines that reach the storage under different
-            //! names still find the same file.
-            std::string syncMediaRoot;
-
             bool operator == (const ReviewSettings&) const = default;
         };
+
+        //! The client identifier a PC is known by on the sync server when
+        //! none has been set: its computer name, in lower case, kept to the
+        //! characters a client identifier can have.
+        DJV_MODELS_API std::string defaultSyncClientId();
+
+        //! Sync server settings: the server this PC reviews with, who it is
+        //! there, and where it reaches the media.
+        struct DJV_MODELS_API_TYPE SyncSettings
+        {
+            //! The sync server, e.g. "http://10.0.0.5:8787".
+            std::string server = "http://localhost:8787";
+
+            //! The access token the sync server asks for, if it asks for one.
+            std::string token;
+
+            //! Who this PC is on the server; the admin registers it there.
+            //! Unique per PC: two DJVs on one PC may share it.
+            std::string clientId = defaultSyncClientId();
+
+            //! The drive letter the server's media share is mapped to, e.g.
+            //! "S". Empty to not map one. Each PC chooses its own.
+            std::string driveLetter;
+
+            //! The media share the server last said it has, e.g.
+            //! "\\10.0.0.5\media", kept so that the drive is mapped even when
+            //! the server cannot be reached at start.
+            std::string shareUnc;
+
+            //! The folder where the media is reached when no drive is mapped:
+            //! on a PC that is not Windows, or on one that reaches the share
+            //! some other way. A sync session names its media relative to
+            //! the media folder, so that machines that reach the storage
+            //! under different names still find the same file.
+            std::string mediaRoot;
+
+            //! Contact the server and map the drive when DJV starts.
+            bool connectOnStart = true;
+
+            bool operator == (const SyncSettings&) const = default;
+        };
+
+        //! Read the sync settings, from their section or, the first time,
+        //! from the review settings they were kept with before they had a
+        //! section of their own.
+        DJV_MODELS_API SyncSettings readSyncSettings(const std::shared_ptr<ftk::Settings>&);
+
+        //! The sync settings after a reset: the PC's place on the studio
+        //! network -- who it is on the server, the server, the token, and
+        //! the drive it maps -- is not a preference, and survives it.
+        DJV_MODELS_API SyncSettings resetSyncSettings(const SyncSettings&);
 
         //! Keyboard shortcuts settings.
         struct DJV_MODELS_API_TYPE ShortcutsSettings
@@ -540,6 +577,15 @@ namespace djv
 
             ///@}
 
+            //! \name Sync Server
+            ///@{
+
+            DJV_MODELS_API const SyncSettings& getSync() const;
+            DJV_MODELS_API std::shared_ptr<ftk::IObservable<SyncSettings> > observeSync() const;
+            DJV_MODELS_API void setSync(const SyncSettings&);
+
+            ///@}
+
             //! \name Keyboard Shortcuts
             ///@{
 
@@ -641,6 +687,7 @@ namespace djv
         DJV_MODELS_API void to_json(nlohmann::json&, const MouseSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const PlaybackSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const ReviewSettings&);
+        DJV_MODELS_API void to_json(nlohmann::json&, const SyncSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const ShortcutsSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const StyleSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const TimelineSettings&);
@@ -656,6 +703,10 @@ namespace djv
         DJV_MODELS_API void from_json(const nlohmann::json&, MouseSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, PlaybackSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, ReviewSettings&);
+
+        //! Read leniently: what is missing keeps its default, so that a
+        //! setting added later does not lose the ones saved before it.
+        DJV_MODELS_API void from_json(const nlohmann::json&, SyncSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, ShortcutsSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, StyleSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, TimelineSettings&);

@@ -54,6 +54,71 @@ namespace djv
         //! file name on the server, so it is kept to what is safe in both.
         DJV_MODELS_API bool isValidSyncSession(const std::string&);
 
+        //! Whether a client identifier can be used: letters, digits, '.',
+        //! '_' and '-', up to 64 of them. The server checks the same.
+        DJV_MODELS_API bool isValidSyncClientId(const std::string&);
+
+        //! Who a DJV is on the sync server: the PC, as the admin registered
+        //! it, and the DJV it runs. Sent with every request.
+        struct DJV_MODELS_API_TYPE SyncIdentity
+        {
+            std::string clientId;
+            std::string version;
+
+            bool operator == (const SyncIdentity&) const = default;
+        };
+
+        //! What the sync server said about itself and this PC.
+        enum class SyncServerState
+        {
+            Unknown,
+            Checking,
+            //! Reached, and this PC may use it.
+            Ok,
+            //! Reached, but this PC is not registered; the admin approves it.
+            Unregistered,
+            //! Not reached, or not a sync server.
+            Unreachable,
+            Error
+        };
+
+        //! The sync server's answer to hello.
+        struct DJV_MODELS_API_TYPE SyncServerInfo
+        {
+            SyncServerState state = SyncServerState::Unknown;
+            std::string server;
+            std::string name;
+            std::string serverVersion;
+
+            //! The DJV version the studio runs; empty when not checked.
+            std::string djvVersion;
+
+            //! The media share, e.g. "\\10.0.0.5\media"; empty when none.
+            std::string storageUnc;
+
+            bool requireRegistration = false;
+            std::string clientId;
+            std::string clientName;
+            bool registered = false;
+
+            //! What went wrong, or a warning such as a version mismatch.
+            std::string message;
+
+            bool operator == (const SyncServerInfo&) const = default;
+        };
+
+        //! Read the server's answer to hello. The state is Ok or
+        //! Unregistered.
+        DJV_MODELS_API SyncServerInfo parseSyncServerInfo(const nlohmann::json&);
+
+        //! Ask a sync server about itself and this PC. Blocks for as long
+        //! as the server takes, up to a few seconds, so it is called from a
+        //! thread of its own (see LanModel).
+        DJV_MODELS_API SyncServerInfo fetchSyncServerInfo(
+            const std::string& server,
+            const std::string& token,
+            const SyncIdentity&);
+
         //! The partial state of a server-sent event stream.
         struct DJV_MODELS_API_TYPE SyncEventStream
         {
@@ -138,6 +203,10 @@ namespace djv
             //! The media, for PutMedia.
             SyncMedia      media;
         };
+
+        //! The words for a refusal from a server that only lets in
+        //! registered clients.
+        DJV_MODELS_API std::string syncUnregisteredMessage(const std::string& clientId);
 
         //! The merge between the markers and a sync session, without the
         //! network: it is told what the server said and what the markers
@@ -256,7 +325,10 @@ namespace djv
             //! already open are merged into the session: the ones it does
             //! not have are sent to it. Throws if the server or the session
             //! cannot be used.
-            DJV_MODELS_API void connect(const ReviewSync&, const std::string& token);
+            DJV_MODELS_API void connect(
+                const ReviewSync&,
+                const std::string& token,
+                const SyncIdentity& = SyncIdentity());
 
             //! Leave the session. The markers stay as they are.
             DJV_MODELS_API void disconnect();

@@ -27,6 +27,7 @@ namespace djv
             void _review();
             void _settings();
             void _media();
+            void _lan();
             void _merge();
             void _connect();
             void _live();

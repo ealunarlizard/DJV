@@ -3,7 +3,11 @@
 
 #include <djv/ModelsTest/SyncModelTest.h>
 
+#include <djv/ModelsTest/ModelsTestUtil.h>
+
+#include <djv/Models/LanModel.h>
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/NetworkDrive.h>
 #include <djv/Models/SettingsModel.h>
 #include <djv/Models/SyncModel.h>
 
@@ -98,6 +102,7 @@ namespace djv
             _review();
             _settings();
             _media();
+            _lan();
             _merge();
             _connect();
             _live();
@@ -213,23 +218,167 @@ namespace djv
 
         void SyncModelTest::_settings()
         {
-            models::ReviewSettings settings;
-            settings.showNotes = false;
-            settings.noteDuration = 4.F;
-            settings.syncServer = "http://review:9000";
-            settings.syncToken = "secret";
-            settings.syncMediaRoot = "//nas/media";
-            nlohmann::json json = settings;
-            FTK_CHECK(json.get<models::ReviewSettings>() == settings);
+            models::ReviewSettings review;
+            review.showNotes = false;
+            review.noteDuration = 4.F;
+            nlohmann::json json = review;
+            FTK_CHECK(json.get<models::ReviewSettings>() == review);
 
-            // Settings saved before the media folder existed still read,
-            // keeping the server and the token.
-            json.erase("SyncMediaRoot");
-            const auto older = json.get<models::ReviewSettings>();
-            FTK_CHECK("http://review:9000" == older.syncServer);
-            FTK_CHECK("secret" == older.syncToken);
-            FTK_CHECK(older.syncMediaRoot.empty());
-            _print("  review settings -> ok");
+            models::SyncSettings sync;
+            FTK_CHECK(models::isValidSyncClientId(sync.clientId));
+            sync.server = "http://10.0.0.5:8787";
+            sync.token = "secret";
+            sync.clientId = "edit-bay-1";
+            sync.driveLetter = "S";
+            sync.shareUnc = "\\\\10.0.0.5\\media";
+            sync.mediaRoot = "//nas/media";
+            sync.connectOnStart = false;
+            json = sync;
+            FTK_CHECK(json.get<models::SyncSettings>() == sync);
+
+            // What is missing, or not what it should be, keeps its default
+            // and does not lose the rest.
+            json.erase("DriveLetter");
+            json["ConnectOnStart"] = "yes";
+            const auto partial = json.get<models::SyncSettings>();
+            FTK_CHECK("edit-bay-1" == partial.clientId);
+            FTK_CHECK(partial.driveLetter.empty());
+            FTK_CHECK(partial.connectOnStart);
+
+            // The sync settings were kept with the review settings before
+            // they had a section of their own; they move across.
+            auto settings = createTestSettings(_context);
+            nlohmann::json older;
+            older["ShowNotes"] = true;
+            older["NoteDuration"] = 2.5F;
+            older["SyncServer"] = "http://review:9000";
+            older["SyncToken"] = "old-secret";
+            older["SyncMediaRoot"] = "//nas/old";
+            settings->set("/Review.1", older);
+            auto moved = models::readSyncSettings(settings);
+            FTK_CHECK("http://review:9000" == moved.server);
+            FTK_CHECK("old-secret" == moved.token);
+            FTK_CHECK("//nas/old" == moved.mediaRoot);
+            FTK_CHECK(models::isValidSyncClientId(moved.clientId));
+
+            // Once the section is there, it is what is read.
+            settings->setT("/Sync.1", sync);
+            FTK_CHECK(models::readSyncSettings(settings) == sync);
+
+            // Resetting the settings keeps this PC's place on the network,
+            // and only that.
+            const auto reset = models::resetSyncSettings(sync);
+            FTK_CHECK("edit-bay-1" == reset.clientId);
+            FTK_CHECK("S" == reset.driveLetter);
+            FTK_CHECK(sync.server == reset.server);
+            FTK_CHECK(sync.shareUnc == reset.shareUnc);
+            FTK_CHECK(reset.mediaRoot.empty());
+            FTK_CHECK(reset.connectOnStart);
+            _print("  review and sync settings -> ok");
+        }
+
+        void SyncModelTest::_lan()
+        {
+            FTK_CHECK(models::isValidSyncClientId("edit-bay-1"));
+            FTK_CHECK(models::isValidSyncClientId("Grading.Suite_2"));
+            FTK_CHECK(!models::isValidSyncClientId(""));
+            FTK_CHECK(!models::isValidSyncClientId(".."));
+            FTK_CHECK(!models::isValidSyncClientId("edit bay"));
+            FTK_CHECK(!models::isValidSyncClientId(std::string(65, 'a')));
+
+            FTK_CHECK("S" == models::normalizeDriveLetter("s"));
+            FTK_CHECK("S" == models::normalizeDriveLetter("S:"));
+            FTK_CHECK("S" == models::normalizeDriveLetter("s:\\"));
+            FTK_CHECK(models::normalizeDriveLetter("").empty());
+            FTK_CHECK(models::normalizeDriveLetter("SS").empty());
+            FTK_CHECK(models::normalizeDriveLetter("1:").empty());
+
+            FTK_CHECK(models::isSameUncPath("\\\\10.0.0.5\\Media\\", "//10.0.0.5/media"));
+            FTK_CHECK(!models::isSameUncPath("\\\\10.0.0.5\\media", "\\\\10.0.0.6\\media"));
+            FTK_CHECK(!models::isSameUncPath("", ""));
+
+            // A path not on a mapped drive is left as it is.
+            FTK_CHECK("relative/a.mov" == models::toUncPath("relative/a.mov"));
+#if defined(_WIN32)
+            // A letter that is free is not a network drive.
+            const auto free = models::getFreeDriveLetters();
+            if (!free.empty())
+            {
+                FTK_CHECK(models::getDriveConnection(free.back()).empty());
+                const std::string path = free.back() + ":\\shots\\a.mov";
+                FTK_CHECK(path == models::toUncPath(path));
+            }
+            // A letter in use by a disk is not taken over.
+            const auto refused = models::mapNetworkDrive("C", "\\\\10.255.255.1\\media");
+            FTK_CHECK(!refused.ok);
+            FTK_CHECK(!refused.message.empty());
+#else // _WIN32
+            FTK_CHECK(!models::isNetworkDriveSupported());
+            FTK_CHECK(!models::mapNetworkDrive("S", "//server/media").ok);
+#endif // _WIN32
+
+            // What the server says, read.
+            nlohmann::json hello;
+            hello["name"] = "Dev review server";
+            hello["serverVersion"] = "1.1.0";
+            hello["djvVersion"] = "3.7.5";
+            hello["requireRegistration"] = true;
+            hello["storage"] = { { "unc", "\\\\10.0.0.5\\media" } };
+            hello["client"] = { { "id", "edit-bay-1" }, { "name", "Edit bay 1" }, { "registered", true } };
+            auto info = models::parseSyncServerInfo(hello);
+            FTK_CHECK(models::SyncServerState::Ok == info.state);
+            FTK_CHECK("Dev review server" == info.name);
+            FTK_CHECK("\\\\10.0.0.5\\media" == info.storageUnc);
+            FTK_CHECK("3.7.5" == info.djvVersion);
+            FTK_CHECK("Edit bay 1" == info.clientName);
+            hello["client"]["registered"] = false;
+            info = models::parseSyncServerInfo(hello);
+            FTK_CHECK(models::SyncServerState::Unregistered == info.state);
+            FTK_CHECK(info.message.find("edit-bay-1") != std::string::npos);
+            hello["requireRegistration"] = false;
+            FTK_CHECK(models::SyncServerState::Ok == models::parseSyncServerInfo(hello).state);
+            FTK_CHECK(models::SyncServerState::Ok == models::parseSyncServerInfo(nlohmann::json()).state);
+
+            // A server that is not there.
+            info = models::fetchSyncServerInfo("http://127.0.0.1:9", std::string(), models::SyncIdentity{ "edit-bay-1", "3.7.5" });
+            FTK_CHECK(models::SyncServerState::Unreachable == info.state);
+            FTK_CHECK(models::SyncServerState::Error == models::fetchSyncServerInfo("", "", {}).state);
+            FTK_CHECK(models::SyncServerState::Error == models::fetchSyncServerInfo("ftp://x", "", {}).state);
+
+            // The model: without a drive letter there is nothing to map, and
+            // the media is found in the media folder of the settings.
+            models::SyncSettings sync;
+            sync.server = "http://127.0.0.1:9";
+            sync.mediaRoot = "//nas/media";
+            sync.driveLetter.clear();
+            auto syncSettings = ftk::Observable<models::SyncSettings>::create(sync);
+            auto lan = models::LanModel::create(
+                _context,
+                syncSettings,
+                [syncSettings](const models::SyncSettings& value) { syncSettings->setIfChanged(value); },
+                "3.7.5");
+            FTK_CHECK("3.7.5" == lan->getIdentity().version);
+            FTK_CHECK(sync.clientId == lan->getIdentity().clientId);
+            FTK_CHECK("//nas/media" == lan->observeMediaRoot()->get());
+            lan->mapDrive();
+            FTK_CHECK(models::LanDriveState::None == lan->observeDrive()->get().state);
+
+            // A server that cannot be reached is reported, and the share last
+            // named is what would be mapped.
+            sync.shareUnc = "\\\\10.255.255.1\\media";
+            syncSettings->setIfChanged(sync);
+            lan->start();
+            FTK_CHECK(models::SyncServerState::Checking == lan->observeServerInfo()->get().state);
+            const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (models::SyncServerState::Checking == lan->observeServerInfo()->get().state &&
+                std::chrono::steady_clock::now() < end)
+            {
+                _context->tick();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            FTK_CHECK(models::SyncServerState::Unreachable == lan->observeServerInfo()->get().state);
+            FTK_CHECK(models::LanDriveState::None == lan->observeDrive()->get().state);
+            _print("  lan -> ok");
         }
 
         void SyncModelTest::_media()
@@ -509,6 +658,22 @@ namespace djv
                 return;
             }
             const std::string session = "test-" + models::generateId();
+
+            // The server says who it is; a server that only lets in
+            // registered PCs says this one is not, and what to do.
+            const auto info = models::fetchSyncServerInfo(
+                server,
+                std::string(),
+                models::SyncIdentity{ "djv-test-" + models::generateId().substr(0, 8), "test" });
+            FTK_CHECK(
+                models::SyncServerState::Ok == info.state ||
+                models::SyncServerState::Unregistered == info.state);
+            if (models::SyncServerState::Unregistered == info.state)
+            {
+                FTK_CHECK(info.message.find("djv-test-") != std::string::npos);
+                _print("  live: the server only lets in registered PCs; the rest is skipped");
+                return;
+            }
 
             // Run the timers until the condition holds, or give up.
             auto waitFor = [this](const std::function<bool()>& condition)

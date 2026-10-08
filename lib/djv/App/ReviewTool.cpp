@@ -10,6 +10,7 @@
 #include <djv/Models/CommandsModel.h>
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
+#include <djv/Models/LanModel.h>
 #include <djv/Models/MarkersModel.h>
 #include <djv/Models/SettingsModel.h>
 #include <djv/Models/SyncModel.h>
@@ -280,7 +281,7 @@ namespace djv
             std::shared_ptr<ftk::Observer<models::SyncStatus> > syncStatusObserver;
             std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
-            std::shared_ptr<ftk::Observer<models::ReviewSettings> > syncSettingsObserver;
+            std::shared_ptr<ftk::Observer<std::string> > syncMediaRootObserver;
         };
 
         void ReviewTool::_init(
@@ -401,7 +402,7 @@ namespace djv
             auto syncForm = ftk::FormLayout::create(context, syncWidget);
             syncForm->setSpacingRole(ftk::SizeRole::SpacingSmall);
             p.syncServerEdit = ftk::LineEdit::create(context);
-            p.syncServerEdit->setText(app->getSettingsModel()->getReview().syncServer);
+            p.syncServerEdit->setText(app->getSettingsModel()->getSync().server);
             p.syncServerEdit->setTooltip(
                 "The sync server, e.g. http://localhost:8787.");
             syncForm->addRow("Server:", p.syncServerEdit);
@@ -432,7 +433,7 @@ namespace djv
             p.syncLoadMediaButton = ftk::PushButton::create(context, "Load", syncMediaRow);
             p.syncLoadMediaButton->setTooltip(
                 "Open the session's media, found through the network media "
-                "folder in the Review settings.");
+                "folder in the Sync Server settings.");
 
             ftk::setScreenshotTag(p.addNoteButton, "Review.AddNote");
             ftk::setScreenshotTag(p.addRangeButton, "Review.AddRange");
@@ -631,16 +632,16 @@ namespace djv
                     sync.session = trimmed(p.syncSessionEdit->getText());
                     if (sync.server.empty())
                     {
-                        sync.server = app->getSettingsModel()->getReview().syncServer;
+                        sync.server = app->getSettingsModel()->getSync().server;
                     }
                     if (sync.session.empty())
                     {
                         sync.session = defaultSyncSession(app);
                     }
                     // The server typed here is the one to offer next time.
-                    auto settings = app->getSettingsModel()->getReview();
-                    settings.syncServer = sync.server;
-                    app->getSettingsModel()->setReview(settings);
+                    auto settings = app->getSettingsModel()->getSync();
+                    settings.server = sync.server;
+                    app->getSettingsModel()->setSync(settings);
                     app->connectSync(sync);
                 });
 
@@ -679,9 +680,9 @@ namespace djv
                 {
                     _syncMediaUpdate();
                 });
-            p.syncSettingsObserver = ftk::Observer<models::ReviewSettings>::create(
-                app->getSettingsModel()->observeReview(),
-                [this](const models::ReviewSettings&)
+            p.syncMediaRootObserver = ftk::Observer<std::string>::create(
+                app->getLanModel()->observeMediaRoot(),
+                [this](const std::string&)
                 {
                     _syncMediaUpdate();
                 });
@@ -909,7 +910,7 @@ namespace djv
                     arg(ftk::fromFileSystem(path)).
                     arg(exists ?
                         std::string("Found on this machine.") :
-                        std::string("Not found on this machine: check the network media folder in the Review settings."));
+                        std::string("Not found on this machine: check the drive letter or the media folder in the Sync Server settings."));
                 if (!media->sharedBy.empty())
                 {
                     tooltip += ftk::Format("\nShared by {0}.").arg(media->sharedBy).str();

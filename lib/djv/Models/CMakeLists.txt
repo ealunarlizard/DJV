@@ -7,7 +7,9 @@ set(HEADERS
     DrawModel.h
     Export.h
     FilesModel.h
+    LanModel.h
     MarkersModel.h
+    NetworkDrive.h
     OCIOModel.h
     Parse.h
     Playlist.h
@@ -32,7 +34,9 @@ set(SOURCE
     CommandsModel.cpp
     DrawModel.cpp
     FilesModel.cpp
+    LanModel.cpp
     MarkersModel.cpp
+    NetworkDrive.cpp
     OCIOModel.cpp
     Parse.cpp
     Playlist.cpp
@@ -94,6 +98,12 @@ find_package(Threads REQUIRED)
 target_link_libraries(djvModels Threads::Threads)
 if(WIN32)
     target_link_libraries(djvModels ws2_32)
+endif()
+
+# Mapping the studio's media share to a drive letter (NetworkDrive.cpp) is the
+# Windows networking API, WNetAddConnection2, which lives in mpr.
+if(WIN32)
+    target_link_libraries(djvModels mpr)
 endif()
 set_property(GLOBAL APPEND PROPERTY LEGAL_NOTICES
     "cpp-httplib=${PROJECT_SOURCE_DIR}/deps/cpp-httplib/LICENSE")

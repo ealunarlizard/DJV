@@ -3,6 +3,9 @@
 
 #include <djv/UI/SettingsWidgets.h>
 
+#include <djv/Models/LanModel.h>
+#include <djv/Models/NetworkDrive.h>
+#include <djv/Models/SyncModel.h>
 #include <djv/Models/TimeUnitsModel.h>
 
 #if defined(TLRENDER_USD)
@@ -1012,9 +1015,6 @@ namespace djv
             std::shared_ptr<models::SettingsModel> settings;
             std::shared_ptr<ftk::CheckBox> showNotesCheckBox;
             std::shared_ptr<ftk::FloatEditSlider> noteDurationSlider;
-            std::shared_ptr<ftk::LineEdit> syncServerEdit;
-            std::shared_ptr<ftk::LineEdit> syncTokenEdit;
-            std::shared_ptr<ftk::FileEdit> syncMediaRootEdit;
             std::shared_ptr<ftk::FormLayout> layout;
 
             std::shared_ptr<ftk::Observer<models::ReviewSettings> > settingsObserver;
@@ -1044,34 +1044,12 @@ namespace djv
                 "How long a note stays once playback has passed it, in "
                 "seconds, fading out over the end of that time.");
 
-            p.syncServerEdit = ftk::LineEdit::create(context);
-            p.syncServerEdit->setTooltip(
-                "The sync server offered when sharing a review's markers, "
-                "e.g. http://localhost:8787.");
-
-            p.syncTokenEdit = ftk::LineEdit::create(context);
-            p.syncTokenEdit->setTooltip(
-                "The access token, if the sync server asks for one.");
-
-            p.syncMediaRootEdit = ftk::FileEdit::create(context, ftk::FileBrowserMode::Dir);
-            p.syncMediaRootEdit->setTooltip(
-                "Where this machine reaches the network storage that holds "
-                "the review media, e.g. \\\\nas\\media on Windows or "
-                "/Volumes/media on macOS.\n"
-                "A sync session names its media relative to this folder, so "
-                "that machines reaching the storage under different names "
-                "still find the same file.");
-            ftk::setScreenshotTag(p.syncMediaRootEdit, "Settings.Review.SyncMediaRoot");
-
             p.layout = ftk::FormLayout::create(context);
 
             _setWidget(p.layout);
             p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
             p.layout->addRow("Show notes over the video:", p.showNotesCheckBox);
             p.layout->addRow("Note duration (seconds):", p.noteDurationSlider);
-            p.layout->addRow("Sync server:", p.syncServerEdit);
-            p.layout->addRow("Sync token:", p.syncTokenEdit);
-            p.layout->addRow("Network media folder:", p.syncMediaRootEdit);
 
             p.settingsObserver = ftk::Observer<models::ReviewSettings>::create(
                 settings->observeReview(),
@@ -1081,9 +1059,6 @@ namespace djv
                     p.showNotesCheckBox->setChecked(value.showNotes);
                     p.noteDurationSlider->setValue(value.noteDuration);
                     p.noteDurationSlider->setEnabled(value.showNotes);
-                    p.syncServerEdit->setText(value.syncServer);
-                    p.syncTokenEdit->setText(value.syncToken);
-                    p.syncMediaRootEdit->setPath(ftk::Path(value.syncMediaRoot));
                 });
 
             p.showNotesCheckBox->setCheckedCallback(
@@ -1103,33 +1078,6 @@ namespace djv
                     settings.noteDuration = value;
                     p.settings->setReview(settings);
                 });
-
-            p.syncServerEdit->setCallback(
-                [this](const std::string& value)
-                {
-                    FTK_P();
-                    auto settings = p.settings->getReview();
-                    settings.syncServer = value;
-                    p.settings->setReview(settings);
-                });
-
-            p.syncTokenEdit->setCallback(
-                [this](const std::string& value)
-                {
-                    FTK_P();
-                    auto settings = p.settings->getReview();
-                    settings.syncToken = value;
-                    p.settings->setReview(settings);
-                });
-
-            p.syncMediaRootEdit->setCallback(
-                [this](const ftk::Path& value)
-                {
-                    FTK_P();
-                    auto settings = p.settings->getReview();
-                    settings.syncMediaRoot = value.get();
-                    p.settings->setReview(settings);
-                });
         }
 
         ReviewSettingsWidget::ReviewSettingsWidget() :
@@ -1147,6 +1095,343 @@ namespace djv
             auto out = std::shared_ptr<ReviewSettingsWidget>(new ReviewSettingsWidget);
             out->_init(context, settings, parent);
             return out;
+        }
+
+        struct SyncSettingsWidget::Private
+        {
+            std::shared_ptr<models::SettingsModel> settings;
+            std::shared_ptr<models::LanModel> lanModel;
+
+            //! The letters the drive combo offers, "None" first as empty.
+            std::vector<std::string> driveLetters;
+
+            std::shared_ptr<ftk::LineEdit> serverEdit;
+            std::shared_ptr<ftk::LineEdit> tokenEdit;
+            std::shared_ptr<ftk::LineEdit> clientIdEdit;
+            std::shared_ptr<ftk::Label> clientIdLabel;
+            std::shared_ptr<ftk::ComboBox> driveComboBox;
+            std::shared_ptr<ftk::Label> shareLabel;
+            std::shared_ptr<ftk::FileEdit> mediaRootEdit;
+            std::shared_ptr<ftk::CheckBox> connectOnStartCheckBox;
+            std::shared_ptr<ftk::PushButton> testButton;
+            std::shared_ptr<ftk::Label> serverStatusLabel;
+            std::shared_ptr<ftk::Label> driveStatusLabel;
+            std::shared_ptr<ftk::FormLayout> layout;
+
+            std::shared_ptr<ftk::Observer<models::SyncSettings> > settingsObserver;
+            std::shared_ptr<ftk::Observer<models::SyncServerInfo> > serverInfoObserver;
+            std::shared_ptr<ftk::Observer<models::LanDriveStatus> > driveObserver;
+        };
+
+        namespace
+        {
+            //! An address or an identifier as typed, without the spaces a
+            //! paste brings along.
+            std::string trimmed(const std::string& value)
+            {
+                const size_t start = value.find_first_not_of(" \t\r\n");
+                if (std::string::npos == start)
+                {
+                    return std::string();
+                }
+                const size_t end = value.find_last_not_of(" \t\r\n");
+                return value.substr(start, end - start + 1);
+            }
+
+            //! Wrap a long status line at spaces: a label does not wrap.
+            std::string wrapStatus(const std::string& text, size_t width = 48)
+            {
+                std::string out;
+                size_t line = 0;
+                for (const auto& word : ftk::split(text, ' '))
+                {
+                    if (line > 0 && line + 1 + word.size() > width)
+                    {
+                        out += '\n';
+                        line = 0;
+                    }
+                    else if (line > 0)
+                    {
+                        out += ' ';
+                        ++line;
+                    }
+                    out += word;
+                    line += word.size();
+                }
+                return out;
+            }
+        }
+
+        void SyncSettingsWidget::_init(
+            const std::shared_ptr<ftk::Context>& context,
+            const std::shared_ptr<models::SettingsModel>& settings,
+            const std::shared_ptr<models::LanModel>& lanModel,
+            const std::shared_ptr<IWidget>& parent)
+        {
+            ISettingsWidget::_init(context, "djv::ui::SyncSettingsWidget", parent);
+            FTK_P();
+
+            p.settings = settings;
+            p.lanModel = lanModel;
+
+            p.serverEdit = ftk::LineEdit::create(context);
+            p.serverEdit->setTooltip(
+                "The sync server, e.g. http://10.0.0.5:8787: the address of "
+                "the dev server and the port the sync server listens on.");
+            ftk::setScreenshotTag(p.serverEdit, "Settings.Sync.Server");
+
+            p.tokenEdit = ftk::LineEdit::create(context);
+            p.tokenEdit->setTooltip(
+                "The access token, if the sync server asks for one.");
+
+            p.clientIdEdit = ftk::LineEdit::create(context);
+            p.clientIdEdit->setTooltip(
+                "Who this PC is on the sync server: the admin registers this "
+                "identifier on the server's admin page. Unique per PC; letters, "
+                "digits, '.', '_' and '-'. The computer name by default.");
+            ftk::setScreenshotTag(p.clientIdEdit, "Settings.Sync.ClientId");
+            p.clientIdLabel = ftk::Label::create(context);
+
+            p.driveComboBox = ftk::ComboBox::create(context);
+            p.driveComboBox->setTooltip(
+                "The drive letter the server's media share is mapped to on "
+                "this PC. Each PC chooses its own; DJV maps it at start.");
+            ftk::setScreenshotTag(p.driveComboBox, "Settings.Sync.Drive");
+
+            p.shareLabel = ftk::Label::create(context);
+            p.shareLabel->setTooltip(
+                "The media share the server last named. It is set on the "
+                "server's admin page.");
+
+            p.mediaRootEdit = ftk::FileEdit::create(context, ftk::FileBrowserMode::Dir);
+            p.mediaRootEdit->setTooltip(
+                "Where the media is reached when no drive is mapped: on a PC "
+                "that is not Windows (e.g. /Volumes/media), or one that "
+                "reaches the share some other way.\n"
+                "A sync session names its media relative to this folder, or "
+                "to the mapped drive, so that machines reaching the storage "
+                "under different names still find the same file.");
+
+            p.connectOnStartCheckBox = ftk::CheckBox::create(
+                context,
+                "Contact the server and map the drive at start");
+
+            p.testButton = ftk::PushButton::create(context, "Check");
+            p.testButton->setTooltip(
+                "Ask the server whether this PC is registered and where the "
+                "media share is, then map the drive.");
+            ftk::setScreenshotTag(p.testButton, "Settings.Sync.Check");
+            p.serverStatusLabel = ftk::Label::create(context);
+            p.driveStatusLabel = ftk::Label::create(context);
+
+            p.layout = ftk::FormLayout::create(context);
+            _setWidget(p.layout);
+            p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.layout->addRow("Server:", p.serverEdit);
+            p.layout->addRow("Token:", p.tokenEdit);
+            p.layout->addRow("Client ID:", p.clientIdEdit);
+            p.layout->addRow("", p.clientIdLabel);
+            p.layout->addRow("Media drive:", p.driveComboBox);
+            p.layout->addRow("Media share:", p.shareLabel);
+            p.layout->addRow("Media folder:", p.mediaRootEdit);
+            p.layout->addRow("", p.connectOnStartCheckBox);
+            p.layout->addRow("", p.testButton);
+            p.layout->addRow("Server:", p.serverStatusLabel);
+            p.layout->addRow("Drive:", p.driveStatusLabel);
+
+            _driveLettersUpdate();
+
+            p.settingsObserver = ftk::Observer<models::SyncSettings>::create(
+                settings->observeSync(),
+                [this](const models::SyncSettings& value)
+                {
+                    FTK_P();
+                    p.serverEdit->setText(value.server);
+                    p.tokenEdit->setText(value.token);
+                    p.clientIdEdit->setText(value.clientId);
+                    p.clientIdLabel->setText(models::isValidSyncClientId(value.clientId) ?
+                        std::string() :
+                        std::string("Letters, digits, '.', '_' and '-' only, up to 64."));
+                    _driveLettersUpdate();
+                    p.shareLabel->setText(value.shareUnc.empty() ?
+                        std::string("Not known yet: click Check.") :
+                        value.shareUnc);
+                    p.mediaRootEdit->setPath(ftk::Path(value.mediaRoot));
+                    p.connectOnStartCheckBox->setChecked(value.connectOnStart);
+                });
+
+            p.serverInfoObserver = ftk::Observer<models::SyncServerInfo>::create(
+                lanModel->observeServerInfo(),
+                [this](const models::SyncServerInfo& value)
+                {
+                    FTK_P();
+                    std::string text;
+                    switch (value.state)
+                    {
+                    case models::SyncServerState::Unknown:
+                        text = "Not checked yet.";
+                        break;
+                    case models::SyncServerState::Checking:
+                        text = "Checking...";
+                        break;
+                    case models::SyncServerState::Ok:
+                        text = ftk::Format("{0}{1}").
+                            arg(value.name.empty() ? std::string("Reached") : value.name).
+                            arg(value.requireRegistration ?
+                                std::string(ftk::Format(": registered as {0}.").
+                                    arg(value.clientName.empty() ? value.clientId : value.clientName)) :
+                                std::string("."));
+                        break;
+                    case models::SyncServerState::Unregistered:
+                    case models::SyncServerState::Unreachable:
+                    case models::SyncServerState::Error:
+                        break;
+                    }
+                    if (!value.message.empty())
+                    {
+                        text = text.empty() ? value.message : text + " " + value.message;
+                    }
+                    p.serverStatusLabel->setText(wrapStatus(text));
+                    p.testButton->setEnabled(value.state != models::SyncServerState::Checking);
+                });
+
+            p.driveObserver = ftk::Observer<models::LanDriveStatus>::create(
+                lanModel->observeDrive(),
+                [this](const models::LanDriveStatus& value)
+                {
+                    FTK_P();
+                    std::string text;
+                    switch (value.state)
+                    {
+                    case models::LanDriveState::None:
+                        text = "No drive letter is set.";
+                        break;
+                    case models::LanDriveState::Unsupported:
+                        text = "Drive letters are a Windows feature; set the media folder instead.";
+                        break;
+                    default:
+                        text = value.message;
+                        break;
+                    }
+                    p.driveStatusLabel->setText(wrapStatus(text));
+                    // The folder is only what is used when no drive is.
+                    p.mediaRootEdit->setEnabled(value.state != models::LanDriveState::Mapped);
+                });
+
+            p.serverEdit->setCallback(
+                [this](const std::string& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getSync();
+                    settings.server = trimmed(value);
+                    p.settings->setSync(settings);
+                });
+
+            p.tokenEdit->setCallback(
+                [this](const std::string& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getSync();
+                    settings.token = value;
+                    p.settings->setSync(settings);
+                });
+
+            p.clientIdEdit->setCallback(
+                [this](const std::string& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getSync();
+                    settings.clientId = trimmed(value);
+                    p.settings->setSync(settings);
+                });
+
+            p.driveComboBox->setIndexCallback(
+                [this](int index)
+                {
+                    FTK_P();
+                    if (index >= 0 && index < static_cast<int>(p.driveLetters.size()))
+                    {
+                        auto settings = p.settings->getSync();
+                        settings.driveLetter = p.driveLetters[index];
+                        p.settings->setSync(settings);
+                    }
+                });
+
+            p.mediaRootEdit->setCallback(
+                [this](const ftk::Path& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getSync();
+                    settings.mediaRoot = value.get();
+                    p.settings->setSync(settings);
+                });
+
+            p.connectOnStartCheckBox->setCheckedCallback(
+                [this](bool value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getSync();
+                    settings.connectOnStart = value;
+                    p.settings->setSync(settings);
+                });
+
+            p.testButton->setClickedCallback(
+                [this]
+                {
+                    FTK_P();
+                    _driveLettersUpdate();
+                    p.lanModel->start();
+                });
+        }
+
+        SyncSettingsWidget::SyncSettingsWidget() :
+            _p(new Private)
+        {}
+
+        SyncSettingsWidget::~SyncSettingsWidget()
+        {}
+
+        std::shared_ptr<SyncSettingsWidget> SyncSettingsWidget::create(
+            const std::shared_ptr<ftk::Context>& context,
+            const std::shared_ptr<models::SettingsModel>& settings,
+            const std::shared_ptr<models::LanModel>& lanModel,
+            const std::shared_ptr<IWidget>& parent)
+        {
+            auto out = std::shared_ptr<SyncSettingsWidget>(new SyncSettingsWidget);
+            out->_init(context, settings, lanModel, parent);
+            return out;
+        }
+
+        void SyncSettingsWidget::_driveLettersUpdate()
+        {
+            FTK_P();
+            // The free letters, and the one chosen even when it is not free:
+            // it is in use because DJV mapped it.
+            const std::string current = models::normalizeDriveLetter(p.settings->getSync().driveLetter);
+            std::vector<std::string> letters = models::getFreeDriveLetters();
+            if (!current.empty() && std::find(letters.begin(), letters.end(), current) == letters.end())
+            {
+                letters.push_back(current);
+                std::sort(letters.begin(), letters.end());
+            }
+            letters.insert(letters.begin(), std::string());
+            std::vector<std::string> labels;
+            int index = 0;
+            for (size_t i = 0; i < letters.size(); ++i)
+            {
+                labels.push_back(letters[i].empty() ? std::string("None") : letters[i] + ":");
+                if (letters[i] == current)
+                {
+                    index = static_cast<int>(i);
+                }
+            }
+            if (letters != p.driveLetters)
+            {
+                p.driveLetters = letters;
+                p.driveComboBox->setItems(labels);
+            }
+            p.driveComboBox->setCurrentIndex(index);
+            p.driveComboBox->setEnabled(models::isNetworkDriveSupported());
         }
 
         struct PlaybackSettingsWidget::Private
