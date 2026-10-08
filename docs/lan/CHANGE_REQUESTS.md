@@ -55,7 +55,7 @@ assets.
 | [CR-005](#cr-005-server-admin-page) | Server admin page | Implemented | `b14b81bb4` |
 | [CR-006](#cr-006-media-share-mapped-to-a-drive) | Media share mapped to a drive | Implemented (LAN check pending) | `24756d3db` |
 | [CR-007](#cr-007-djv-version-check) | DJV version check | Implemented | `b14b81bb4`, `24756d3db` |
-| [CR-008](#cr-008-lan-documentation-and-logs) | LAN documentation and logs | Implemented | this branch, docs commit |
+| [CR-008](#cr-008-lan-documentation-and-logs) | LAN documentation and logs | Implemented | `a8832511f` |
 | [CR-009](#cr-009-session-picker) | Session picker | Proposed | |
 | [CR-010](#cr-010-encrypted-connections) | Encrypted connections | Proposed | |
 | [CR-011](#cr-011-shared-drawings) | Shared drawings | Proposed | |
@@ -308,7 +308,7 @@ own.
 |---|---|
 | **Status** | Implemented |
 | **Requested** | 2026-10-08 |
-| **Implemented** | 2026-10-08, `feature/lan-server` |
+| **Implemented** | 2026-10-08, `feature/lan-server`, `a8832511f` |
 
 **Description.** Documentation for setting up and using DJV on the studio
 network, a log of the change requests, and a changelog of what is
