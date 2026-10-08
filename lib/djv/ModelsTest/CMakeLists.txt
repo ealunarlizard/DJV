@@ -11,6 +11,7 @@ set(HEADERS
     SettingsModelTest.h
     ShellCommandTest.h
     StrokeTest.h
+    SyncModelTest.h
     TimeUnitsModelTest.h
     ToolsModelTest.h
     ViewportModelTest.h)
@@ -27,6 +28,7 @@ set(SOURCE
     SettingsModelTest.cpp
     ShellCommandTest.cpp
     StrokeTest.cpp
+    SyncModelTest.cpp
     TimeUnitsModelTest.cpp
     ToolsModelTest.cpp
     ViewportModelTest.cpp)

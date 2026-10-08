@@ -7,6 +7,7 @@
 #include <djv/Models/ColorModel.h>
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
+#include <djv/Models/MarkersModel.h>
 #include <djv/Models/SettingsModel.h>
 #include <djv/Models/Stroke.h>
 #include <djv/Models/TimeUnitsModel.h>
@@ -22,6 +23,7 @@
 #include <ftk/UI/ScreenshotTag.h>
 #include <ftk/UI/Spacer.h>
 #include <ftk/Core/Format.h>
+#include <ftk/Core/Math.h>
 #include <ftk/Core/String.h>
 #include <ftk/Core/Timer.h>
 
@@ -44,6 +46,45 @@ namespace djv
 
             const std::chrono::seconds toastTimeout(5);
             const std::chrono::seconds hintTimeout(3);
+
+            //! The longest step between two frames that playback is taken to
+            //! have played through, rather than jumped: a player that drops
+            //! frames steps over a few, a seek or a loop goes further.
+            const double notesMaxStep = .5;
+
+            //! The width a note is wrapped to, as a share of the viewport.
+            const float notesMaxWidth = .6F;
+
+            //! Greedy word wrap to a width in pixels. The fonts give no wrap
+            //! of their own to draw with, only to measure.
+            std::vector<std::string> wrapNote(
+                const std::string& text,
+                int maxWidth,
+                const std::shared_ptr<ftk::FontSystem>& fontSystem,
+                const ftk::FontInfo& fontInfo)
+            {
+                std::vector<std::string> out;
+                for (const auto& paragraph : ftk::split(text, '\n', ftk::SplitOptions::KeepEmpty))
+                {
+                    std::string line;
+                    for (const auto& word : ftk::split(paragraph, ' '))
+                    {
+                        const std::string candidate = line.empty() ? word : line + " " + word;
+                        if (!line.empty() &&
+                            fontSystem->getSize(candidate, fontInfo).w > maxWidth)
+                        {
+                            out.push_back(line);
+                            line = word;
+                        }
+                        else
+                        {
+                            line = candidate;
+                        }
+                    }
+                    out.push_back(line);
+                }
+                return out;
+            }
         }
 
         struct Viewport::Private
@@ -151,6 +192,24 @@ namespace djv
             std::shared_ptr<models::FilesModel> filesModel;
             std::shared_ptr<models::AnnotationsModel> annotationsModel;
             std::shared_ptr<models::DrawModel> drawModel;
+
+            //! The notes over the video.
+            std::vector<models::ReviewMarker> markers;
+            models::ReviewSettings reviewSettings;
+            tl::Playback playback = tl::Playback::Stop;
+            //! The frame shown before the current one, for the span playback
+            //! has just played through.
+            std::optional<OTIO_NS::RationalTime> prevTime;
+            //! The notes that playback has reached, by marker, and when.
+            struct ActiveNote
+            {
+                std::string id;
+                std::chrono::steady_clock::time_point start;
+            };
+            std::vector<ActiveNote> activeNotes;
+            std::shared_ptr<ftk::ListObserver<models::ReviewMarker> > markersObserver;
+            std::shared_ptr<ftk::Observer<models::ReviewSettings> > reviewSettingsObserver;
+            std::shared_ptr<ftk::Observer<tl::Playback> > playbackObserver;
         };
 
         void Viewport::_init(
@@ -292,6 +351,19 @@ namespace djv
             p.hudLayouts[models::HUDPos::BottomRight]->setParent(bottomRowLayout);
 
             p.toastTimer = ftk::Timer::create(context);
+
+            p.reviewSettingsObserver = ftk::Observer<models::ReviewSettings>::create(
+                settingsModel->observeReview(),
+                [this](const models::ReviewSettings& value)
+                {
+                    FTK_P();
+                    p.reviewSettings = value;
+                    if (!value.showNotes)
+                    {
+                        p.activeNotes.clear();
+                    }
+                    setDrawUpdate();
+                });
 
             p.fpsObserver = ftk::Observer<double>::create(
                 observeFPS(),
@@ -630,9 +702,71 @@ namespace djv
                     player->observeCurrentTime(),
                     [this](const OTIO_NS::RationalTime& value)
                     {
-                        _p->currentTime = value;
+                        FTK_P();
+                        // The notes of the frames played through since the
+                        // last one shown, or of this frame alone when the
+                        // player jumped here.
+                        if (p.playback != tl::Playback::Stop && p.prevTime.has_value())
+                        {
+                            const OTIO_NS::RationalTime prev =
+                                p.prevTime->rescaled_to(value.rate());
+                            const double step = (value - prev).to_seconds();
+                            if (tl::Playback::Forward == p.playback && step > 0.0 && step <= notesMaxStep)
+                            {
+                                _notesStart(prev + OTIO_NS::RationalTime(1.0, value.rate()), value);
+                            }
+                            else if (tl::Playback::Reverse == p.playback && step < 0.0 && -step <= notesMaxStep)
+                            {
+                                _notesStart(value, prev - OTIO_NS::RationalTime(1.0, value.rate()));
+                            }
+                            else
+                            {
+                                _notesStart(value, value);
+                            }
+                        }
+                        p.prevTime = value;
+                        p.currentTime = value;
                         _hudUpdate();
                         // Annotations are per frame, so the overlay changes.
+                        setDrawUpdate();
+                    });
+
+                p.playbackObserver = ftk::Observer<tl::Playback>::create(
+                    player->observePlayback(),
+                    [this](tl::Playback value)
+                    {
+                        FTK_P();
+                        const bool starting =
+                            tl::Playback::Stop == p.playback &&
+                            value != tl::Playback::Stop;
+                        p.playback = value;
+                        // The note on the frame playback starts from shows
+                        // and fades like the ones playback reaches.
+                        if (starting && p.currentTime.has_value())
+                        {
+                            for (const auto& marker : p.markers)
+                            {
+                                if (!marker.text.empty() &&
+                                    marker.range.has_value() &&
+                                    marker.range->contains(*p.currentTime))
+                                {
+                                    const auto now = std::chrono::steady_clock::now();
+                                    auto i = std::find_if(
+                                        p.activeNotes.begin(),
+                                        p.activeNotes.end(),
+                                        [&marker](const Private::ActiveNote& note)
+                                        { return note.id == marker.id; });
+                                    if (i != p.activeNotes.end())
+                                    {
+                                        i->start = now;
+                                    }
+                                    else
+                                    {
+                                        p.activeNotes.push_back({ marker.id, now });
+                                    }
+                                }
+                            }
+                        }
                         setDrawUpdate();
                     });
 
@@ -681,6 +815,10 @@ namespace djv
                 setInputEnabled(false);
                 p.mediaReferenceKeyObserver.reset();
                 p.currentTime.reset();
+                p.prevTime.reset();
+                p.playback = tl::Playback::Stop;
+                p.activeNotes.clear();
+                p.playbackObserver.reset();
                 p.videoFrames.clear();
                 p.currentTimeObserver.reset();
                 p.videoObserver.reset();
@@ -690,6 +828,85 @@ namespace djv
             }
             // A file arriving or going changes which items there are.
             _hudLayout();
+        }
+
+        void Viewport::setMarkersModel(const std::shared_ptr<models::MarkersModel>& value)
+        {
+            FTK_P();
+            p.markers.clear();
+            p.activeNotes.clear();
+            p.markersObserver.reset();
+            if (value)
+            {
+                p.markersObserver = ftk::ListObserver<models::ReviewMarker>::create(
+                    value->observeMarkers(),
+                    [this](const std::vector<models::ReviewMarker>& value)
+                    {
+                        FTK_P();
+                        p.markers = value;
+                        // A note removed, or emptied, goes from the screen too.
+                        p.activeNotes.erase(
+                            std::remove_if(
+                                p.activeNotes.begin(),
+                                p.activeNotes.end(),
+                                [&value](const Private::ActiveNote& note)
+                                {
+                                    return std::none_of(
+                                        value.begin(),
+                                        value.end(),
+                                        [&note](const models::ReviewMarker& marker)
+                                        { return marker.id == note.id && !marker.text.empty(); });
+                                }),
+                            p.activeNotes.end());
+                        setDrawUpdate();
+                    });
+            }
+            setDrawUpdate();
+        }
+
+        void Viewport::_notesStart(
+            const OTIO_NS::RationalTime& start,
+            const OTIO_NS::RationalTime& end)
+        {
+            FTK_P();
+            if (!p.reviewSettings.showNotes)
+            {
+                return;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            for (const auto& marker : p.markers)
+            {
+                if (marker.text.empty() || !marker.range.has_value())
+                {
+                    continue;
+                }
+                // A note is reached at the first frame of its span. Rescaled
+                // to the player's rate, and compared by frame, so a marker
+                // made at another rate is reached all the same.
+                const double frame = std::floor(
+                    marker.range->start_time().rescaled_to(start.rate()).value() + .5);
+                if (frame < std::floor(start.value() + .5) ||
+                    frame > std::floor(end.value() + .5))
+                {
+                    continue;
+                }
+                auto i = std::find_if(
+                    p.activeNotes.begin(),
+                    p.activeNotes.end(),
+                    [&marker](const Private::ActiveNote& note) { return note.id == marker.id; });
+                if (i != p.activeNotes.end())
+                {
+                    i->start = now;
+                }
+                else
+                {
+                    p.activeNotes.push_back({ marker.id, now });
+                }
+            }
+            if (!p.activeNotes.empty())
+            {
+                setDrawUpdate();
+            }
         }
 
         void Viewport::setHUDActive(bool value)
@@ -1121,6 +1338,30 @@ namespace djv
             }
         }
 
+        void Viewport::tickEvent(
+            bool parentsVisible,
+            bool parentsEnabled,
+            const ftk::TickEvent& event)
+        {
+            tl::ui::Viewport::tickEvent(parentsVisible, parentsEnabled, event);
+            FTK_P();
+            // The notes fade a little every tick until they are gone.
+            if (!p.activeNotes.empty())
+            {
+                const auto now = std::chrono::steady_clock::now();
+                const std::chrono::duration<float> duration(
+                    std::max(.1F, p.reviewSettings.noteDuration));
+                p.activeNotes.erase(
+                    std::remove_if(
+                        p.activeNotes.begin(),
+                        p.activeNotes.end(),
+                        [now, duration](const Private::ActiveNote& note)
+                        { return now - note.start >= duration; }),
+                    p.activeNotes.end());
+                setDrawUpdate();
+            }
+        }
+
         void Viewport::drawEvent(const ftk::Box2I& drawRect, const ftk::DrawEvent& event)
         {
             tl::ui::Viewport::drawEvent(drawRect, event);
@@ -1220,8 +1461,152 @@ namespace djv
                 drawStroke(p.strokeSource, p.stroke, sourceScale(p.strokeSource));
             }
 
+            // The notes, over everything drawn on the frame.
+            _drawNotes(g, event);
+
             event.render->setClipRectEnabled(clipRectEnabledPrev);
             event.render->setClipRect(clipRectPrev);
+        }
+
+        void Viewport::_drawNotes(const ftk::Box2I& g, const ftk::DrawEvent& event)
+        {
+            FTK_P();
+            if (!p.reviewSettings.showNotes || p.markers.empty())
+            {
+                return;
+            }
+
+            // What to show, and how strongly: the notes playback has
+            // reached, fading over the last part of their time, and while
+            // stopped the notes on the current frame, held.
+            struct Note
+            {
+                const models::ReviewMarker* marker = nullptr;
+                float opacity = 1.F;
+            };
+            std::vector<Note> notes;
+            const auto now = std::chrono::steady_clock::now();
+            const float duration = std::max(.1F, p.reviewSettings.noteDuration);
+            const float fade = std::min(1.F, duration * .4F);
+            for (const auto& active : p.activeNotes)
+            {
+                const auto i = std::find_if(
+                    p.markers.begin(),
+                    p.markers.end(),
+                    [&active](const models::ReviewMarker& marker) { return marker.id == active.id; });
+                if (i == p.markers.end())
+                {
+                    continue;
+                }
+                const float elapsed = std::chrono::duration<float>(now - active.start).count();
+                const float opacity = ftk::clamp((duration - elapsed) / fade, 0.F, 1.F);
+                if (opacity > 0.F)
+                {
+                    notes.push_back({ &*i, opacity });
+                }
+            }
+            if (tl::Playback::Stop == p.playback && p.currentTime.has_value())
+            {
+                for (const auto& marker : p.markers)
+                {
+                    if (marker.text.empty() ||
+                        !marker.range.has_value() ||
+                        !marker.range->contains(*p.currentTime))
+                    {
+                        continue;
+                    }
+                    auto i = std::find_if(
+                        notes.begin(),
+                        notes.end(),
+                        [&marker](const Note& note) { return note.marker->id == marker.id; });
+                    if (i != notes.end())
+                    {
+                        i->opacity = 1.F;
+                    }
+                    else
+                    {
+                        notes.push_back({ &marker, 1.F });
+                    }
+                }
+            }
+            if (notes.empty())
+            {
+                return;
+            }
+
+            // Stacked down from the top middle, clear of the heads up display
+            // in the corners and of the toast at the bottom.
+            const int margin = event.style->getSizeRole(ftk::SizeRole::MarginSmall, event.displayScale);
+            const int spacing = event.style->getSizeRole(ftk::SizeRole::Spacing, event.displayScale);
+            const int stripe = event.style->getSizeRole(ftk::SizeRole::Border, event.displayScale) * 3;
+            const ftk::FontInfo textFont = event.style->getFont(ftk::FontType::Regular, event.displayScale);
+            const ftk::FontInfo authorFont = event.style->getFont(ftk::FontType::Bold, event.displayScale);
+            const ftk::FontMetrics textMetrics = event.fontSystem->getMetrics(textFont);
+            const ftk::FontMetrics authorMetrics = event.fontSystem->getMetrics(authorFont);
+            const int maxWidth = std::max(1, static_cast<int>(g.w() * notesMaxWidth) - margin * 2 - stripe);
+            const ftk::Color4F background = event.style->getColorRole(ftk::ColorRole::Overlay);
+            const ftk::Color4F textColor = event.style->getColorRole(ftk::ColorRole::Text);
+            const ftk::Color4F authorColor = event.style->getColorRole(ftk::ColorRole::TextDisabled);
+            auto withOpacity = [](ftk::Color4F color, float opacity)
+            {
+                color.a *= opacity;
+                return color;
+            };
+
+            int y = g.min.y + margin * 4;
+            for (const auto& note : notes)
+            {
+                const auto lines = wrapNote(note.marker->text, maxWidth, event.fontSystem, textFont);
+                int width = 0;
+                const std::string& author = note.marker->author;
+                if (!author.empty())
+                {
+                    width = event.fontSystem->getSize(author, authorFont).w;
+                }
+                for (const auto& line : lines)
+                {
+                    width = std::max(width, event.fontSystem->getSize(line, textFont).w);
+                }
+                const int height =
+                    (author.empty() ? 0 : authorMetrics.lineHeight) +
+                    static_cast<int>(lines.size()) * textMetrics.lineHeight +
+                    margin * 2;
+                const ftk::Box2I box(
+                    g.min.x + (g.w() - (width + margin * 2 + stripe)) / 2,
+                    y,
+                    width + margin * 2 + stripe,
+                    height);
+                if (box.min.y > g.max.y)
+                {
+                    break;
+                }
+                event.render->drawRect(box, withOpacity(background, note.opacity));
+                // The marker's color down the side, as the timeline and the
+                // review tool show it.
+                event.render->drawRect(
+                    ftk::Box2I(box.min.x, box.min.y, stripe, box.h()),
+                    withOpacity(note.marker->color, note.opacity));
+                ftk::V2I pos(box.min.x + stripe + margin, box.min.y + margin);
+                if (!author.empty())
+                {
+                    event.render->drawText(
+                        event.fontSystem->getGlyphs(author, authorFont),
+                        authorMetrics,
+                        pos,
+                        withOpacity(authorColor, note.opacity));
+                    pos.y += authorMetrics.lineHeight;
+                }
+                for (const auto& line : lines)
+                {
+                    event.render->drawText(
+                        event.fontSystem->getGlyphs(line, textFont),
+                        textMetrics,
+                        pos,
+                        withOpacity(textColor, note.opacity));
+                    pos.y += textMetrics.lineHeight;
+                }
+                y = box.max.y + 1 + spacing;
+            }
         }
 
         void Viewport::_videoUpdate()

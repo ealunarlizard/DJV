@@ -4,6 +4,17 @@ Changes:
 * Add an option for showing multiple timelines in compare mode.
 * Movies, PNG, and OpenImageIO files are written as 8-bit or 16-bit depending
   on the image type.
+* The notes of the review markers are shown over the video: as playback
+  reaches a note it appears and fades, and while stopped on a frame with a
+  note the note stays.
+* Review markers can be shared live with other people through a sync
+  server (server/), with the session saved in the review. The server keeps
+  its sessions in a SQLite database.
+* A sync session keeps the media file its markers are about, named relative
+  to a network media folder set on each machine, and joining a session with
+  nothing open opens it.
+* Review/Open, Review/Save and Review/AddNote take arguments for
+  automation.
 
 Fixes:
 * Fix for the levels of 10-bit and deeper YUV movies read as RGB.

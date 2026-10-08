@@ -14,6 +14,7 @@
 #include <djv/Models/ColorModel.h>
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
+#include <djv/Models/MarkersModel.h>
 #include <djv/Models/SettingsModel.h>
 #include <djv/Models/TimeUnitsModel.h>
 #include <djv/Models/ViewportModel.h>
@@ -58,6 +59,7 @@ namespace djv
                     nb::arg("drawModel"),
                     nb::arg("sysLogModel"),
                     nb::arg("parent") = nullptr)
+                .def("setMarkersModel", &Viewport::setMarkersModel, nb::arg("markersModel"))
                 .def("setToastActive", &Viewport::setToastActive)
                 .def("showHint", &Viewport::showHint, nb::arg("text"))
                 .def("setHUDActive", &Viewport::setHUDActive);

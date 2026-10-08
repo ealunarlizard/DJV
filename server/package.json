@@ -1,0 +1,19 @@
+{
+  "name": "djv-sync-server",
+  "version": "1.0.0",
+  "description": "Shares the markers of DJV reviews between people, live.",
+  "license": "BSD-3-Clause",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "djv-sync-server": "server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}

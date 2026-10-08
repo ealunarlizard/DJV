@@ -438,7 +438,8 @@ namespace djv
                 color == other.color &&
                 text == other.text &&
                 author == other.author &&
-                created == other.created;
+                created == other.created &&
+                modified == other.modified;
         }
 
         bool ReviewMarker::operator != (const ReviewMarker& other) const
@@ -471,6 +472,10 @@ namespace djv
             {
                 json["created"] = in.created;
             }
+            if (!in.modified.empty())
+            {
+                json["modified"] = in.modified;
+            }
         }
 
         void from_json(const nlohmann::json& json, ReviewMarker& out)
@@ -482,6 +487,20 @@ namespace djv
             if (json.contains("text")) json.at("text").get_to(out.text);
             if (json.contains("author")) json.at("author").get_to(out.author);
             if (json.contains("created")) json.at("created").get_to(out.created);
+            if (json.contains("modified")) json.at("modified").get_to(out.modified);
+        }
+
+        void to_json(nlohmann::json& json, const ReviewSync& in)
+        {
+            json = nlohmann::json::object();
+            json["server"] = in.server;
+            json["session"] = in.session;
+        }
+
+        void from_json(const nlohmann::json& json, ReviewSync& out)
+        {
+            json.at("server").get_to(out.server);
+            json.at("session").get_to(out.session);
         }
 
         void to_json(nlohmann::json& json, const Review& in)
@@ -530,6 +549,19 @@ namespace djv
             write("ui", in.ui);
             writeList("annotations", in.annotations);
             writeList("markers", in.markers);
+            // A review that is no longer shared drops the section, rather
+            // than send the next person who opens it to a session it has
+            // left. A section that could not be read is kept as found, like
+            // any other.
+            if (in.sync.has_value())
+            {
+                write("sync", in.sync.value());
+            }
+            else if (std::find(in.unreadSections.begin(), in.unreadSections.end(), "sync") ==
+                in.unreadSections.end())
+            {
+                json.erase("sync");
+            }
             // The development-era sections were lifted into the markers on
             // load; left in the raw copy they would come back as duplicates
             // the next time the document is read.
@@ -558,6 +590,16 @@ namespace djv
             readSection(json, "ui", out.ui, out);
             readList(json, "annotations", out.annotations, out);
             readList(json, "markers", out.markers, out);
+            if (json.contains("sync"))
+            {
+                ReviewSync sync;
+                readSection(json, "sync", sync, out);
+                if (std::find(out.unreadSections.begin(), out.unreadSections.end(), "sync") ==
+                    out.unreadSections.end())
+                {
+                    out.sync = sync;
+                }
+            }
 
             // Courtesy read of the development-era shape: the "notes" and
             // "ranges" sections written between August 2026 and the marker

@@ -6,6 +6,7 @@
 #include <djv/App/IToolWidget.h>
 
 #include <djv/Models/Review.h>
+#include <djv/Models/SyncModel.h>
 
 namespace ftk
 {
@@ -54,6 +55,8 @@ namespace djv
             void keyReleaseEvent(ftk::KeyEvent&) override;
 
         private:
+            void _syncStatusUpdate(const models::SyncStatus&);
+            void _syncMediaUpdate();
             void _drawStateUpdate();
             //! What the header delete button would delete: the list's
             //! current item, or failing that the marker on the current

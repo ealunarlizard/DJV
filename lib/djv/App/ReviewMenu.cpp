@@ -51,6 +51,11 @@ namespace djv
             addAction(actions["AddRange"]);
             addAction(actions["PrevFrame"]);
             addAction(actions["NextFrame"]);
+            addDivider();
+            addAction(actions["SyncConnect"]);
+            addAction(actions["SyncDisconnect"]);
+            addAction(actions["SyncShareMedia"]);
+            addAction(actions["SyncLoadMedia"]);
 
             p.recentObserver = ftk::ListObserver<ftk::Path>::create(
                 app->getRecentReviewsModel()->observeRecent(),

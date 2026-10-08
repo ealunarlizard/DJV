@@ -76,9 +76,10 @@ namespace djv
                 markers.begin(),
                 markers.end(),
                 [id](const ReviewMarker& marker) { return marker.id == id; });
-            if (i != markers.end())
+            if (i != markers.end() && i->text != text)
             {
                 i->text = text;
+                i->modified = timestamp();
                 p.markers->setIfChanged(markers);
             }
         }
@@ -91,11 +92,31 @@ namespace djv
                 markers.begin(),
                 markers.end(),
                 [id](const ReviewMarker& marker) { return marker.id == id; });
-            if (i != markers.end())
+            if (i != markers.end() && i->color != color)
             {
                 i->color = color;
+                i->modified = timestamp();
                 p.markers->setIfChanged(markers);
             }
+        }
+
+        void MarkersModel::upsert(const ReviewMarker& marker)
+        {
+            FTK_P();
+            auto markers = p.markers->get();
+            const auto i = std::find_if(
+                markers.begin(),
+                markers.end(),
+                [&marker](const ReviewMarker& other) { return other.id == marker.id; });
+            if (i != markers.end())
+            {
+                *i = marker;
+            }
+            else
+            {
+                markers.push_back(marker);
+            }
+            _set(markers);
         }
 
         void MarkersModel::remove(const std::string& id)

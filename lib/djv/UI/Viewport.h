@@ -20,6 +20,7 @@ namespace djv
         class ColorModel;
         class DrawModel;
         class FilesModel;
+        class MarkersModel;
         class SettingsModel;
         class TimeUnitsModel;
         class ViewportModel;
@@ -64,6 +65,12 @@ namespace djv
 
             DJV_UI_API void setPlayer(const std::shared_ptr<tl::Player>&) override;
 
+            //! Set the review markers whose notes are shown over the video:
+            //! as playback reaches a note it appears and fades, and while
+            //! stopped on a frame with a note the note stays. See the review
+            //! settings for whether, and for how long.
+            DJV_UI_API void setMarkersModel(const std::shared_ptr<models::MarkersModel>&);
+
             //! Set whether the toast stands in for the status bar.
             DJV_UI_API void setToastActive(bool);
 
@@ -79,6 +86,7 @@ namespace djv
 
             DJV_UI_API ftk::Size2I getSizeHint() const override;
             DJV_UI_API void setGeometry(const ftk::Box2I&) override;
+            DJV_UI_API void tickEvent(bool, bool, const ftk::TickEvent&) override;
             DJV_UI_API void drawEvent(const ftk::Box2I&, const ftk::DrawEvent&) override;
             DJV_UI_API void mouseMoveEvent(ftk::MouseMoveEvent&) override;
             DJV_UI_API void mousePressEvent(ftk::MouseClickEvent&) override;
@@ -124,6 +132,11 @@ namespace djv
             //! The cursor follows the drawing mode: a crosshair while the
             //! pointer is inside and drawing is enabled.
             void _cursorUpdate();
+
+            //! Start the notes of the markers that begin in the given span
+            //! of frames, inclusive.
+            void _notesStart(const OTIO_NS::RationalTime&, const OTIO_NS::RationalTime&);
+            void _drawNotes(const ftk::Box2I&, const ftk::DrawEvent&);
 
             void _videoUpdate();
             void _toastUpdate();

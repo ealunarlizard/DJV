@@ -6,8 +6,9 @@
 # FreeType, the fonts, ...) are theirs to keep -- and each adds its own to the
 # LEGAL_NOTICES global property as it is built. So there are no copies here to
 # drift, a component cannot be listed where it is not built, and one that is
-# built cannot be left off. DJV brings nothing in itself beyond what tlRender
-# and feather-tk do, so its own entry is its license.
+# built cannot be left off. DJV brings in one component itself, cpp-httplib
+# for the sync client, and lib/djv/Models adds its notice where it is built;
+# DJV's own entry is its license.
 set_property(GLOBAL APPEND PROPERTY LEGAL_NOTICES
     "DJV=${PROJECT_SOURCE_DIR}/LICENSE.txt")
 

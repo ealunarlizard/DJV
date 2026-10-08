@@ -53,11 +53,17 @@ namespace djv
 
             //! Replace the text of the marker with the given identifier. The
             //! creation time and author stay: they say who raised the point
-            //! and when, not who last touched the wording.
+            //! and when, not who last touched the wording. The modification
+            //! time is set.
             DJV_MODELS_API void update(const std::string& id, const std::string& text);
 
             //! Replace the color of the marker with the given identifier.
             DJV_MODELS_API void updateColor(const std::string& id, const ftk::Color4F&);
+
+            //! Add the marker, or replace the one with the same identifier,
+            //! as it stands: nothing is filled in. For a marker that arrives
+            //! from somewhere else, e.g. a sync server.
+            DJV_MODELS_API void upsert(const ReviewMarker&);
 
             //! Remove the marker with the given identifier.
             DJV_MODELS_API void remove(const std::string& id);

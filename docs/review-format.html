@@ -71,6 +71,7 @@
 <tr><td><code>ui</code></td><td>The open tool panels.</td></tr>
 <tr><td><code>annotations</code></td><td>Drawings, by source and frame.</td></tr>
 <tr><td><code>markers</code></td><td>Feedback: comments and named frame ranges, anchored to spans of frames.</td></tr>
+<tr><td><code>sync</code></td><td>The sync server and session the markers are shared through, when they are. Optional.</td></tr>
 </table>
 <p><code>compare</code>, <code>view</code>, <code>color</code> and <code>ui</code> delegate to serializers shared with the application settings, and those require every key they know. They are therefore the sections most likely to fail against a document written by a different version — which is why the rules above exist.</p>
 <h3 id="files">Files</h3>
@@ -123,10 +124,18 @@
   "color": [0.0, 0.6, 0.0, 1.0],
   "text": "Grade is too cold from here.",
   "created": "2026-08-26T09:00:00Z",
+  "modified": "2026-08-26T09:12:00Z",
   "author": "matthieu"
 }
 </code></pre>
-<p>A marker belongs to the review rather than to a source: the frames locate it. One type covers a comment on a frame (a one-frame <code>range</code> with <code>text</code>), a named span of frames (a wider <code>range</code> with a <code>name</code>), and both at once. <code>name</code>, <code>range</code>, <code>text</code>, <code>author</code> and <code>created</code> are each optional; a marker with no <code>range</code> speaks about the whole review. The fields map one to one onto OpenTimelineIO markers.</p>
+<p>A marker belongs to the review rather than to a source: the frames locate it. One type covers a comment on a frame (a one-frame <code>range</code> with <code>text</code>), a named span of frames (a wider <code>range</code> with a <code>name</code>), and both at once. <code>name</code>, <code>range</code>, <code>text</code>, <code>author</code>, <code>created</code> and <code>modified</code> are each optional, <code>modified</code> being when the text or color last changed; a marker with no <code>range</code> speaks about the whole review. The fields map one to one onto OpenTimelineIO markers.</p>
+<h3 id="sync">Sync</h3>
+<pre><code>{
+  "server": "http://review-server:8787",
+  "session": "sh010"
+}
+</code></pre>
+<p>Present while the review's markers are shared through a sync server (see <a href="reviews.html#sharing-markers">Sharing markers</a>), and removed when the review stops sharing them. A reader that opens the review joins the session. <code>session</code> is letters, digits, <code>.</code>, <code>_</code> and <code>-</code>, up to 128 of them. The access token is not stored here: it is the reader's own setting.</p>
 <h3 id="attribution">Attribution</h3>
 <p><code>author</code> is optional on both markers and annotations, and is empty when it is not known. DJV has no accounts: it fills the field from the environment — <code>USERNAME</code> on Windows, <code>USER</code> elsewhere — when the item is created. Treat it as a label saying who wrote something when a session comes back from someone else, not as an identity, and never as a permission.</p>
 <p>Identifiers are 64 random bits plus a counter, so items written independently by two people do not collide.</p>

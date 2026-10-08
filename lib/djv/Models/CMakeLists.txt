@@ -14,6 +14,7 @@ set(HEADERS
     RecentFilesModel.h
     Review.h
     Stroke.h
+    SyncModel.h
     SettingsModel.h
     ShellCommand.h
     Shortcuts.h
@@ -38,6 +39,7 @@ set(SOURCE
     RecentFilesModel.cpp
     Review.cpp
     Stroke.cpp
+    SyncModel.cpp
     SettingsModel.cpp
     ShellCommand.cpp
     Shortcuts.cpp
@@ -77,12 +79,24 @@ target_include_directories(djvModels
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        ${CMAKE_CURRENT_BINARY_DIR})
+        ${CMAKE_CURRENT_BINARY_DIR}
+        ${PROJECT_SOURCE_DIR}/deps/cpp-httplib)
 
 # tlUI for the thumbnail system: a shared djvModels must name every
 # library it uses directly, where the static build let the final link
 # resolve it.
 target_link_libraries(djvModels djvResource tlRender::tlUI tlRender::tlTimeline)
+
+# The sync client (SyncModel.cpp): cpp-httplib, a single header kept in deps,
+# runs its connections on threads of its own, and on Windows needs the
+# sockets library. MSVC is told by the header; MinGW is not.
+find_package(Threads REQUIRED)
+target_link_libraries(djvModels Threads::Threads)
+if(WIN32)
+    target_link_libraries(djvModels ws2_32)
+endif()
+set_property(GLOBAL APPEND PROPERTY LEGAL_NOTICES
+    "cpp-httplib=${PROJECT_SOURCE_DIR}/deps/cpp-httplib/LICENSE")
 
 set_target_properties(djvModels PROPERTIES FOLDER lib)
 set_target_properties(djvModels PROPERTIES PUBLIC_HEADER "${HEADERS}")

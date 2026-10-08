@@ -281,6 +281,34 @@ namespace djv
             bool operator == (const PlaybackSettings&) const = default;
         };
 
+        //! Review settings.
+        struct DJV_MODELS_API_TYPE ReviewSettings
+        {
+            //! Show the text of the notes over the video as playback reaches
+            //! them, and while stopped on a frame that has one.
+            bool showNotes = true;
+
+            //! How long a note stays over the video once playback has passed
+            //! it, in seconds. The last part of that time is the fade.
+            float noteDuration = 2.5F;
+
+            //! The sync server offered when connecting a review, e.g.
+            //! "http://localhost:8787".
+            std::string syncServer = "http://localhost:8787";
+
+            //! The access token the sync server asks for, if it asks for one.
+            std::string syncToken;
+
+            //! The folder on this machine where the network storage that
+            //! holds the review media is reached, e.g. "\\nas\media" or
+            //! "/Volumes/media". A sync session names its media relative to
+            //! it, so that machines that reach the storage under different
+            //! names still find the same file.
+            std::string syncMediaRoot;
+
+            bool operator == (const ReviewSettings&) const = default;
+        };
+
         //! Keyboard shortcuts settings.
         struct DJV_MODELS_API_TYPE ShortcutsSettings
         {
@@ -503,6 +531,15 @@ namespace djv
 
             ///@}
 
+            //! \name Review
+            ///@{
+
+            DJV_MODELS_API const ReviewSettings& getReview() const;
+            DJV_MODELS_API std::shared_ptr<ftk::IObservable<ReviewSettings> > observeReview() const;
+            DJV_MODELS_API void setReview(const ReviewSettings&);
+
+            ///@}
+
             //! \name Keyboard Shortcuts
             ///@{
 
@@ -603,6 +640,7 @@ namespace djv
         DJV_MODELS_API void to_json(nlohmann::json&, const MouseActionBinding&);
         DJV_MODELS_API void to_json(nlohmann::json&, const MouseSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const PlaybackSettings&);
+        DJV_MODELS_API void to_json(nlohmann::json&, const ReviewSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const ShortcutsSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const StyleSettings&);
         DJV_MODELS_API void to_json(nlohmann::json&, const TimelineSettings&);
@@ -617,6 +655,7 @@ namespace djv
         DJV_MODELS_API void from_json(const nlohmann::json&, MouseActionBinding&);
         DJV_MODELS_API void from_json(const nlohmann::json&, MouseSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, PlaybackSettings&);
+        DJV_MODELS_API void from_json(const nlohmann::json&, ReviewSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, ShortcutsSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, StyleSettings&);
         DJV_MODELS_API void from_json(const nlohmann::json&, TimelineSettings&);

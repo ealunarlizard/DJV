@@ -248,6 +248,7 @@ namespace djv
                 app->getAnnotationsModel(),
                 app->getDrawModel(),
                 app->getSysLogModel());
+            p.viewport->setMarkersModel(app->getMarkersModel());
             ftk::setScreenshotTag(p.viewport, "MainWindow.Viewport");
 
             auto timeUnitsModel = app->getTimeUnitsModel();

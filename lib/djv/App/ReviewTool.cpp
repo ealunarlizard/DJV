@@ -7,9 +7,12 @@
 #include <djv/App/MainWindow.h>
 #include <djv/App/ReviewActions.h>
 #include <djv/Models/AnnotationsModel.h>
+#include <djv/Models/CommandsModel.h>
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/SettingsModel.h>
+#include <djv/Models/SyncModel.h>
 #include <djv/Models/TimeUnitsModel.h>
 
 #include <tlRender/Timeline/Player.h>
@@ -20,10 +23,12 @@
 #include <ftk/UI/DialogSystem.h>
 #include <ftk/UI/Divider.h>
 #include <ftk/UI/FloatEditSlider.h>
+#include <ftk/UI/FormLayout.h>
 #include <ftk/UI/IWindow.h>
 #include <ftk/UI/ItemButton.h>
 #include <ftk/UI/ItemButtonList.h>
 #include <ftk/UI/Label.h>
+#include <ftk/UI/LineEdit.h>
 #include <ftk/UI/RowLayout.h>
 #include <ftk/UI/ScreenshotTag.h>
 #include <ftk/UI/ScrollWidget.h>
@@ -152,6 +157,18 @@ namespace djv
                     marker.range->contains(*currentTime);
             }
 
+            //! Without the white space at either end, as a field is typed.
+            std::string trimmed(const std::string& value)
+            {
+                const size_t start = value.find_first_not_of(" \t\r\n");
+                if (std::string::npos == start)
+                {
+                    return std::string();
+                }
+                const size_t end = value.find_last_not_of(" \t\r\n");
+                return value.substr(start, end - start + 1);
+            }
+
             //! Soft-wrap text to a column. ftk::Label renders newlines but does
             //! not wrap on its own, so long lines would otherwise overflow.
             std::string wrapText(const std::string& text, size_t columns)
@@ -216,6 +233,15 @@ namespace djv
             std::shared_ptr<ftk::ToolButton> redoButton;
             std::shared_ptr<ftk::PushButton> clearDrawingButton;
 
+            std::shared_ptr<ftk::LineEdit> syncServerEdit;
+            std::shared_ptr<ftk::LineEdit> syncSessionEdit;
+            std::shared_ptr<ftk::PushButton> syncButton;
+            std::shared_ptr<ftk::Label> syncStatusLabel;
+            std::shared_ptr<ftk::Label> syncMediaLabel;
+            std::shared_ptr<ftk::PushButton> syncShareMediaButton;
+            std::shared_ptr<ftk::PushButton> syncLoadMediaButton;
+            models::SyncState syncState = models::SyncState::Disconnected;
+
             std::map<std::string, std::shared_ptr<ftk::Bellows> > bellows;
             std::shared_ptr<ftk::ScrollWidget> scrollWidget;
 
@@ -251,6 +277,10 @@ namespace djv
             std::shared_ptr<ftk::Observer<float> > sizeObserver;
             std::shared_ptr<ftk::Observer<bool> > hasUndoObserver;
             std::shared_ptr<ftk::Observer<bool> > hasRedoObserver;
+            std::shared_ptr<ftk::Observer<models::SyncStatus> > syncStatusObserver;
+            std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
+            std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
+            std::shared_ptr<ftk::Observer<models::ReviewSettings> > syncSettingsObserver;
         };
 
         void ReviewTool::_init(
@@ -364,6 +394,46 @@ namespace djv
             p.sizeSlider->setValue(drawModel->getSize());
             p.sizeSlider->setTooltip("The stroke width, in source pixels.");
 
+            // Sync.
+            auto syncWidget = ftk::VerticalLayout::create(context);
+            syncWidget->setMarginRole(ftk::SizeRole::MarginSmall);
+            syncWidget->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            auto syncForm = ftk::FormLayout::create(context, syncWidget);
+            syncForm->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.syncServerEdit = ftk::LineEdit::create(context);
+            p.syncServerEdit->setText(app->getSettingsModel()->getReview().syncServer);
+            p.syncServerEdit->setTooltip(
+                "The sync server, e.g. http://localhost:8787.");
+            syncForm->addRow("Server:", p.syncServerEdit);
+            p.syncSessionEdit = ftk::LineEdit::create(context);
+            p.syncSessionEdit->setTooltip(
+                "The session to share the markers in. Everyone who joins "
+                "the same session sees the same markers.\n"
+                "\n"
+                "Left empty, it is named after the review file.");
+            syncForm->addRow("Session:", p.syncSessionEdit);
+            auto syncRow = ftk::HorizontalLayout::create(context, syncWidget);
+            syncRow->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.syncStatusLabel = ftk::Label::create(context, syncRow);
+            p.syncStatusLabel->setHStretch(ftk::Stretch::Expanding);
+            p.syncStatusLabel->setVAlign(ftk::VAlign::Center);
+            p.syncButton = ftk::PushButton::create(context, "Connect", syncRow);
+            // The session's media: the file its markers are about, which
+            // whoever joins with nothing open gets.
+            auto syncMediaRow = ftk::HorizontalLayout::create(context, syncWidget);
+            syncMediaRow->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.syncMediaLabel = ftk::Label::create(context, syncMediaRow);
+            p.syncMediaLabel->setHStretch(ftk::Stretch::Expanding);
+            p.syncMediaLabel->setVAlign(ftk::VAlign::Center);
+            p.syncShareMediaButton = ftk::PushButton::create(context, "Share", syncMediaRow);
+            p.syncShareMediaButton->setTooltip(
+                "Make the current file the session's media, replacing what "
+                "it had. Whoever joins with nothing open gets it.");
+            p.syncLoadMediaButton = ftk::PushButton::create(context, "Load", syncMediaRow);
+            p.syncLoadMediaButton->setTooltip(
+                "Open the session's media, found through the network media "
+                "folder in the Review settings.");
+
             ftk::setScreenshotTag(p.addNoteButton, "Review.AddNote");
             ftk::setScreenshotTag(p.addRangeButton, "Review.AddRange");
             ftk::setScreenshotTag(p.deleteButton, "Review.Delete");
@@ -380,6 +450,8 @@ namespace djv
             p.bellows["Markers"]->setWidget(p.markerListLayout);
             p.bellows["Markers"]->setToolWidget(markerToolLayout);
             p.bellows["Markers"]->setOpen(true);
+            p.bellows["Sync"] = ftk::Bellows::create(context, "Sync", layout);
+            p.bellows["Sync"]->setWidget(syncWidget);
 
             p.scrollWidget = ftk::ScrollWidget::create(context);
             p.scrollWidget->setBorder(false);
@@ -540,6 +612,80 @@ namespace djv
                     addNote();
                 });
 
+            p.syncButton->setClickedCallback(
+                [this, appWeak]
+                {
+                    FTK_P();
+                    auto app = appWeak.lock();
+                    if (!app)
+                    {
+                        return;
+                    }
+                    if (p.syncState != models::SyncState::Disconnected)
+                    {
+                        app->disconnectSync();
+                        return;
+                    }
+                    models::ReviewSync sync;
+                    sync.server = trimmed(p.syncServerEdit->getText());
+                    sync.session = trimmed(p.syncSessionEdit->getText());
+                    if (sync.server.empty())
+                    {
+                        sync.server = app->getSettingsModel()->getReview().syncServer;
+                    }
+                    if (sync.session.empty())
+                    {
+                        sync.session = defaultSyncSession(app);
+                    }
+                    // The server typed here is the one to offer next time.
+                    auto settings = app->getSettingsModel()->getReview();
+                    settings.syncServer = sync.server;
+                    app->getSettingsModel()->setReview(settings);
+                    app->connectSync(sync);
+                });
+
+            p.syncStatusObserver = ftk::Observer<models::SyncStatus>::create(
+                app->getSyncModel()->observeStatus(),
+                [this](const models::SyncStatus& value)
+                {
+                    _syncStatusUpdate(value);
+                });
+
+            p.syncShareMediaButton->setClickedCallback(
+                [appWeak]
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getCommandsModel()->exec("Review/SyncShareMedia");
+                    }
+                });
+            p.syncLoadMediaButton->setClickedCallback(
+                [appWeak]
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->getCommandsModel()->exec("Review/SyncLoadMedia");
+                    }
+                });
+            p.syncMediaObserver = ftk::Observer<std::optional<models::SyncMedia> >::create(
+                app->getSyncModel()->observeMedia(),
+                [this](const std::optional<models::SyncMedia>&)
+                {
+                    _syncMediaUpdate();
+                });
+            p.syncAObserver = ftk::Observer<std::shared_ptr<models::FilesModelItem> >::create(
+                app->getFilesModel()->observeA(),
+                [this](const std::shared_ptr<models::FilesModelItem>&)
+                {
+                    _syncMediaUpdate();
+                });
+            p.syncSettingsObserver = ftk::Observer<models::ReviewSettings>::create(
+                app->getSettingsModel()->observeReview(),
+                [this](const models::ReviewSettings&)
+                {
+                    _syncMediaUpdate();
+                });
+
             p.addRangeButton->setClickedCallback(
                 [this]
                 {
@@ -696,6 +842,88 @@ namespace djv
             auto out = std::shared_ptr<ReviewTool>(new ReviewTool);
             out->_init(context, app, mainWindow, parent);
             return out;
+        }
+
+        void ReviewTool::_syncStatusUpdate(const models::SyncStatus& value)
+        {
+            FTK_P();
+            p.syncState = value.state;
+            const bool disconnected = models::SyncState::Disconnected == value.state;
+            if (!disconnected)
+            {
+                p.syncServerEdit->setText(value.server);
+                p.syncSessionEdit->setText(value.session);
+            }
+            p.syncServerEdit->setEnabled(disconnected);
+            p.syncSessionEdit->setEnabled(disconnected);
+            p.syncButton->setText(disconnected ? "Connect" : "Disconnect");
+            std::string text;
+            switch (value.state)
+            {
+            case models::SyncState::Disconnected:
+                text = "Not shared.";
+                break;
+            case models::SyncState::Connecting:
+                text = value.message.empty() ? std::string("Connecting...") : value.message;
+                break;
+            case models::SyncState::Connected:
+                text = "Shared: changes are sent as they are made.";
+                break;
+            case models::SyncState::Error:
+                text = value.message;
+                break;
+            }
+            p.syncStatusLabel->setText(wrapText(text, 32));
+            // A review that is shared says so where its markers are.
+            if (!disconnected)
+            {
+                p.bellows["Sync"]->setOpen(true);
+            }
+            _syncMediaUpdate();
+        }
+
+        void ReviewTool::_syncMediaUpdate()
+        {
+            FTK_P();
+            auto app = _app.lock();
+            if (!app || !p.syncMediaLabel)
+            {
+                return;
+            }
+            const bool connected = p.syncState != models::SyncState::Disconnected;
+            const auto& media = app->getSyncModel()->observeMedia()->get();
+            const auto& a = app->getFilesModel()->getA();
+
+            std::string text;
+            std::string tooltip;
+            bool isOpen = false;
+            if (media.has_value())
+            {
+                bool exists = false;
+                const std::filesystem::path path = app->resolveSyncMedia(exists);
+                // The file open now is the session's: nothing to load.
+                isOpen = exists && a &&
+                    ftk::toFileSystem(a->path.get()).lexically_normal() == path.lexically_normal();
+                text = ftk::Format("Media: {0}").arg(media->name);
+                tooltip = ftk::Format("{0}\n{1}").
+                    arg(ftk::fromFileSystem(path)).
+                    arg(exists ?
+                        std::string("Found on this machine.") :
+                        std::string("Not found on this machine: check the network media folder in the Review settings."));
+                if (!media->sharedBy.empty())
+                {
+                    tooltip += ftk::Format("\nShared by {0}.").arg(media->sharedBy).str();
+                }
+            }
+            else if (connected)
+            {
+                text = "Media: none yet.";
+                tooltip = "Share the current file to give the session its media.";
+            }
+            p.syncMediaLabel->setText(text);
+            p.syncMediaLabel->setTooltip(tooltip);
+            p.syncShareMediaButton->setEnabled(connected && a);
+            p.syncLoadMediaButton->setEnabled(connected && media.has_value() && !isOpen);
         }
 
         void ReviewTool::_drawStateUpdate()

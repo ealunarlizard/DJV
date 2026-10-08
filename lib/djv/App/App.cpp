@@ -40,6 +40,7 @@
 #include <opentimelineio/stack.h>
 #include <opentimelineio/track.h>
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/SyncModel.h>
 #include <djv/Models/RecentFilesModel.h>
 #include <djv/Models/Review.h>
 #include <djv/Models/TimeUnitsModel.h>
@@ -186,6 +187,12 @@ namespace djv
             std::shared_ptr<models::ToolsModel> toolsModel;
             std::shared_ptr<models::CommandsModel> commandsModel;
             std::shared_ptr<models::MarkersModel> markersModel;
+            std::shared_ptr<models::SyncModel> syncModel;
+            //! The sync session's media last opened, or tried, because
+            //! nothing was open; so that a file that cannot be found is not
+            //! looked for again with every change to the session.
+            std::optional<models::SyncMedia> syncAutoLoaded;
+            std::string syncMediaRoot;
             std::shared_ptr<models::AnnotationsModel> annotationsModel;
             std::shared_ptr<models::DrawModel> drawModel;
             std::shared_ptr<ftk::ObservableList<int> > reviewMarkers;
@@ -225,6 +232,9 @@ namespace djv
             std::shared_ptr<ftk::ListObserver<models::ReviewAnnotation> > annotationsModifiedObserver;
             std::shared_ptr<ftk::ListObserver<models::ReviewMarker> > markersObserver;
             std::shared_ptr<ftk::ListObserver<models::ReviewAnnotation> > annotationsObserver;
+            std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
+            std::shared_ptr<ftk::Observer<models::ReviewSettings> > syncSettingsObserver;
+            std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
             std::shared_ptr<ftk::ListObserver<std::string> > drawToolsObserver;
 
             std::shared_ptr<ftk::Observer<tl::PlayerCacheOptions> > cacheObserver;
@@ -635,6 +645,154 @@ namespace djv
         const std::shared_ptr<models::DrawModel>& App::getDrawModel() const
         {
             return _p->drawModel;
+        }
+
+        const std::shared_ptr<models::SyncModel>& App::getSyncModel() const
+        {
+            return _p->syncModel;
+        }
+
+        void App::connectSync(const models::ReviewSync& value)
+        {
+            FTK_P();
+            const auto prev = p.syncModel->getSync();
+            if (_connectSync(value) && prev != p.syncModel->getSync())
+            {
+                // The session is part of the review.
+                _markModified();
+            }
+        }
+
+        void App::disconnectSync()
+        {
+            FTK_P();
+            if (p.syncModel->getSync().has_value())
+            {
+                p.syncModel->disconnect();
+                _markModified();
+            }
+        }
+
+        bool App::_connectSync(const models::ReviewSync& value)
+        {
+            FTK_P();
+            try
+            {
+                p.syncModel->connect(value, p.settingsModel->getReview().syncToken);
+            }
+            catch (const std::exception& e)
+            {
+                _context->log("djv::app::App", e.what(), ftk::LogType::Error);
+                return false;
+            }
+            return true;
+        }
+
+        void App::shareSyncMedia()
+        {
+            FTK_P();
+            if (!p.syncModel->getSync().has_value())
+            {
+                _context->log(
+                    "djv::app::App",
+                    "Connect to a sync session before sharing a file with it.",
+                    ftk::LogType::Error);
+            }
+            else if (!p.syncModel->shareMedia())
+            {
+                _context->log(
+                    "djv::app::App",
+                    "There is no file open to share with the sync session.",
+                    ftk::LogType::Error);
+            }
+        }
+
+        void App::loadSyncMedia()
+        {
+            FTK_P();
+            const auto media = p.syncModel->observeMedia()->get();
+            if (!media.has_value())
+            {
+                _context->log(
+                    "djv::app::App",
+                    "The sync session has no media to open.",
+                    ftk::LogType::Error);
+                return;
+            }
+            bool exists = false;
+            const std::filesystem::path path = resolveSyncMedia(exists);
+            if (!exists)
+            {
+                // Say where it was looked for: the folder in the settings is
+                // the likely culprit, and the path shows whether it is.
+                const std::string mediaRoot = p.settingsModel->getReview().syncMediaRoot;
+                _context->log(
+                    "djv::app::App",
+                    ftk::Format("The sync session's media \"{0}\" cannot be found at \"{1}\". {2}").
+                        arg(media->name).
+                        arg(ftk::fromFileSystem(path)).
+                        arg(mediaRoot.empty() ?
+                            std::string("Set the network media folder in the Review settings.") :
+                            ftk::Format("Check the network media folder in the Review settings (\"{0}\").").
+                                arg(mediaRoot).
+                                str()),
+                    ftk::LogType::Error);
+                return;
+            }
+            open(ftk::Path(ftk::fromFileSystem(path)));
+        }
+
+        std::filesystem::path App::resolveSyncMedia(bool& exists) const
+        {
+            FTK_P();
+            exists = false;
+            const auto& media = p.syncModel->observeMedia()->get();
+            if (!media.has_value())
+            {
+                return std::filesystem::path();
+            }
+            return models::resolveSyncMedia(
+                media.value(),
+                ftk::toFileSystem(p.settingsModel->getReview().syncMediaRoot),
+                exists);
+        }
+
+        void App::_syncLocalMediaUpdate()
+        {
+            FTK_P();
+            std::optional<models::SyncMedia> media;
+            if (const auto& a = p.filesModel->getA())
+            {
+                media = models::syncMediaFromPath(
+                    a->path.get(),
+                    ftk::toFileSystem(p.settingsModel->getReview().syncMediaRoot));
+            }
+            p.syncModel->setLocalMedia(media);
+        }
+
+        void App::_syncMediaUpdate(const std::optional<models::SyncMedia>& value)
+        {
+            FTK_P();
+            if (!value.has_value())
+            {
+                // Out of the session, or a session without media: a file
+                // that could not be found before is worth looking for again
+                // next time.
+                p.syncAutoLoaded.reset();
+                return;
+            }
+            // Only into an empty player: a file already open is the one the
+            // person chose, so the session's media is offered (the Review
+            // tool's Load button) rather than put in its place.
+            if (!p.filesModel->getFiles().empty() || p.syncAutoLoaded == value)
+            {
+                return;
+            }
+            p.syncAutoLoaded = value;
+            _context->log(
+                "djv::app::App",
+                ftk::Format("Opening the sync session's media \"{0}\"").arg(value->name));
+            loadSyncMedia();
         }
 
         std::shared_ptr<ftk::IObservableList<int> > App::observeReviewMarkers() const
@@ -1191,6 +1349,10 @@ namespace djv
                 p.toolsModel->setToolOpen(tool, true);
             }
 
+            // Leave the session of the review being replaced before its
+            // markers are: replaced while connected, they would be deleted
+            // there for everyone.
+            p.syncModel->disconnect();
             p.markersModel->setMarkers(review.markers);
             p.annotationsModel->setAnnotations(review.annotations);
 
@@ -1207,6 +1369,12 @@ namespace djv
             p.reviewUnreadSections = review.unreadSections;
             p.reviewUnreadItems = review.unreadItems;
             p.recentReviewsModel->addRecent(ftk::Path(ftk::fromFileSystem(reviewPath)));
+            // The review's own session, joined once the review's markers are
+            // in place: they are merged into it.
+            if (review.sync.has_value())
+            {
+                _connectSync(review.sync.value());
+            }
             p.reviewModified = false;
             _updateWindowTitle();
             // A freshly loaded review supersedes any earlier autosave.
@@ -1460,6 +1628,7 @@ namespace djv
 
             review.markers = p.markersModel->getMarkers();
             review.annotations = p.annotationsModel->getAnnotations();
+            review.sync = p.syncModel->getSync();
 
             return review;
         }
@@ -1659,6 +1828,9 @@ namespace djv
         void App::_closeReview()
         {
             FTK_P();
+            // Leave the session first: clearing the markers while connected
+            // would delete them there for everyone.
+            p.syncModel->disconnect();
             // Reset to the empty startup state.
             p.filesModel->closeAll();
             tl::CompareOptions compareOptions;
@@ -2763,6 +2935,7 @@ namespace djv
             p.commandsModel = models::CommandsModel::create(_context);
 
             p.markersModel = models::MarkersModel::create();
+            p.syncModel = models::SyncModel::create(_context, p.markersModel);
             p.annotationsModel = models::AnnotationsModel::create();
             p.drawModel = models::DrawModel::create(getSettings());
             p.reviewMarkers = ftk::ObservableList<int>::create();
@@ -3002,6 +3175,38 @@ namespace djv
                 [this](const std::vector<models::ReviewMarker>&)
                 {
                     _markersUpdate();
+                });
+
+            // The sync session's media: the current file is what this client
+            // would share, and the session's media is opened when nothing
+            // else is.
+            p.syncAObserver = ftk::Observer<std::shared_ptr<models::FilesModelItem> >::create(
+                p.filesModel->observeA(),
+                [this](const std::shared_ptr<models::FilesModelItem>&)
+                {
+                    _syncLocalMediaUpdate();
+                });
+            p.syncSettingsObserver = ftk::Observer<models::ReviewSettings>::create(
+                p.settingsModel->observeReview(),
+                [this](const models::ReviewSettings& value)
+                {
+                    FTK_P();
+                    if (value.syncMediaRoot == p.syncMediaRoot)
+                    {
+                        return;
+                    }
+                    p.syncMediaRoot = value.syncMediaRoot;
+                    _syncLocalMediaUpdate();
+                    // A new network media folder may be where the file that
+                    // could not be found is.
+                    p.syncAutoLoaded.reset();
+                    _syncMediaUpdate(p.syncModel->observeMedia()->get());
+                });
+            p.syncMediaObserver = ftk::Observer<std::optional<models::SyncMedia> >::create(
+                p.syncModel->observeMedia(),
+                [this](const std::optional<models::SyncMedia>& value)
+                {
+                    _syncMediaUpdate(value);
                 });
             p.markersModifiedObserver = ftk::ListObserver<models::ReviewMarker>::create(
                 p.markersModel->observeMarkers(),

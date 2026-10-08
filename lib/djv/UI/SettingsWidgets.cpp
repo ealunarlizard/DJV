@@ -1007,6 +1007,148 @@ namespace djv
             return out;
         }
 
+        struct ReviewSettingsWidget::Private
+        {
+            std::shared_ptr<models::SettingsModel> settings;
+            std::shared_ptr<ftk::CheckBox> showNotesCheckBox;
+            std::shared_ptr<ftk::FloatEditSlider> noteDurationSlider;
+            std::shared_ptr<ftk::LineEdit> syncServerEdit;
+            std::shared_ptr<ftk::LineEdit> syncTokenEdit;
+            std::shared_ptr<ftk::FileEdit> syncMediaRootEdit;
+            std::shared_ptr<ftk::FormLayout> layout;
+
+            std::shared_ptr<ftk::Observer<models::ReviewSettings> > settingsObserver;
+        };
+
+        void ReviewSettingsWidget::_init(
+            const std::shared_ptr<ftk::Context>& context,
+            const std::shared_ptr<models::SettingsModel>& settings,
+            const std::shared_ptr<IWidget>& parent)
+        {
+            ISettingsWidget::_init(context, "djv::ui::ReviewSettingsWidget", parent);
+            FTK_P();
+
+            p.settings = settings;
+
+            p.showNotesCheckBox = ftk::CheckBox::create(context);
+            p.showNotesCheckBox->setTooltip(
+                "Show the text of the markers over the video as playback "
+                "reaches them, and while stopped on a frame that has one.");
+
+            p.noteDurationSlider = ftk::FloatEditSlider::create(context);
+            p.noteDurationSlider->setRange(.5F, 10.F);
+            p.noteDurationSlider->setStep(.5F);
+            p.noteDurationSlider->setLargeStep(1.F);
+            p.noteDurationSlider->setDefault(models::ReviewSettings().noteDuration);
+            p.noteDurationSlider->setTooltip(
+                "How long a note stays once playback has passed it, in "
+                "seconds, fading out over the end of that time.");
+
+            p.syncServerEdit = ftk::LineEdit::create(context);
+            p.syncServerEdit->setTooltip(
+                "The sync server offered when sharing a review's markers, "
+                "e.g. http://localhost:8787.");
+
+            p.syncTokenEdit = ftk::LineEdit::create(context);
+            p.syncTokenEdit->setTooltip(
+                "The access token, if the sync server asks for one.");
+
+            p.syncMediaRootEdit = ftk::FileEdit::create(context, ftk::FileBrowserMode::Dir);
+            p.syncMediaRootEdit->setTooltip(
+                "Where this machine reaches the network storage that holds "
+                "the review media, e.g. \\\\nas\\media on Windows or "
+                "/Volumes/media on macOS.\n"
+                "A sync session names its media relative to this folder, so "
+                "that machines reaching the storage under different names "
+                "still find the same file.");
+            ftk::setScreenshotTag(p.syncMediaRootEdit, "Settings.Review.SyncMediaRoot");
+
+            p.layout = ftk::FormLayout::create(context);
+
+            _setWidget(p.layout);
+            p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.layout->addRow("Show notes over the video:", p.showNotesCheckBox);
+            p.layout->addRow("Note duration (seconds):", p.noteDurationSlider);
+            p.layout->addRow("Sync server:", p.syncServerEdit);
+            p.layout->addRow("Sync token:", p.syncTokenEdit);
+            p.layout->addRow("Network media folder:", p.syncMediaRootEdit);
+
+            p.settingsObserver = ftk::Observer<models::ReviewSettings>::create(
+                settings->observeReview(),
+                [this](const models::ReviewSettings& value)
+                {
+                    FTK_P();
+                    p.showNotesCheckBox->setChecked(value.showNotes);
+                    p.noteDurationSlider->setValue(value.noteDuration);
+                    p.noteDurationSlider->setEnabled(value.showNotes);
+                    p.syncServerEdit->setText(value.syncServer);
+                    p.syncTokenEdit->setText(value.syncToken);
+                    p.syncMediaRootEdit->setPath(ftk::Path(value.syncMediaRoot));
+                });
+
+            p.showNotesCheckBox->setCheckedCallback(
+                [this](bool value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getReview();
+                    settings.showNotes = value;
+                    p.settings->setReview(settings);
+                });
+
+            p.noteDurationSlider->setCallback(
+                [this](float value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getReview();
+                    settings.noteDuration = value;
+                    p.settings->setReview(settings);
+                });
+
+            p.syncServerEdit->setCallback(
+                [this](const std::string& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getReview();
+                    settings.syncServer = value;
+                    p.settings->setReview(settings);
+                });
+
+            p.syncTokenEdit->setCallback(
+                [this](const std::string& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getReview();
+                    settings.syncToken = value;
+                    p.settings->setReview(settings);
+                });
+
+            p.syncMediaRootEdit->setCallback(
+                [this](const ftk::Path& value)
+                {
+                    FTK_P();
+                    auto settings = p.settings->getReview();
+                    settings.syncMediaRoot = value.get();
+                    p.settings->setReview(settings);
+                });
+        }
+
+        ReviewSettingsWidget::ReviewSettingsWidget() :
+            _p(new Private)
+        {}
+
+        ReviewSettingsWidget::~ReviewSettingsWidget()
+        {}
+
+        std::shared_ptr<ReviewSettingsWidget> ReviewSettingsWidget::create(
+            const std::shared_ptr<ftk::Context>& context,
+            const std::shared_ptr<models::SettingsModel>& settings,
+            const std::shared_ptr<IWidget>& parent)
+        {
+            auto out = std::shared_ptr<ReviewSettingsWidget>(new ReviewSettingsWidget);
+            out->_init(context, settings, parent);
+            return out;
+        }
+
         struct PlaybackSettingsWidget::Private
         {
             std::shared_ptr<models::SettingsModel> settings;

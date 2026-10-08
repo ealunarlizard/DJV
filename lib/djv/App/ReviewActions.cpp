@@ -9,15 +9,45 @@
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
 #include <djv/Models/MarkersModel.h>
+#include <djv/Models/SettingsModel.h>
+#include <djv/Models/SyncModel.h>
 
 #include <tlRender/Timeline/Player.h>
+
+#include <ftk/Core/Path.h>
 
 namespace djv
 {
     namespace app
     {
+        std::string defaultSyncSession(const std::shared_ptr<App>& app)
+        {
+            // The session the review is in, then one named after its file,
+            // with what a session name cannot hold made safe.
+            if (const auto& sync = app->getSyncModel()->getSync())
+            {
+                return sync->session;
+            }
+            std::string out = ftk::fromFileSystem(app->getReviewPath().stem());
+            for (auto& c : out)
+            {
+                if (!models::isValidSyncSession(std::string(1, c)))
+                {
+                    c = '-';
+                }
+            }
+            if (!models::isValidSyncSession(out))
+            {
+                out = "review-" + models::generateId().substr(0, 8);
+            }
+            return out;
+        }
+
         struct ReviewActions::Private
         {
+            bool hasFiles = false;
+            bool syncConnected = false;
+            bool hasSyncMedia = false;
             bool hasPlayer = false;
             bool hasMarkers = false;
             bool hasMarkerItems = false;
@@ -34,6 +64,8 @@ namespace djv
             std::shared_ptr<ftk::ListObserver<models::ReviewMarker> > markerItemsObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<tl::Player> > > playerObserver;
             std::shared_ptr<ftk::Observer<OTIO_NS::TimeRange> > inOutObserver;
+            std::shared_ptr<ftk::Observer<models::SyncStatus> > syncObserver;
+            std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
         };
 
         void ReviewActions::_init(
@@ -46,25 +78,46 @@ namespace djv
 
             // Register the commands.
             auto appWeak = std::weak_ptr<App>(app);
+            // A path opens or saves that file rather than asking, for
+            // automation.
             _addCommand(
                 "Open",
-                "Open a review, replacing the current session.",
-                [appWeak](const nlohmann::json&)
+                "Open a review, replacing the current session; e.g., "
+                "{ \"path\": \"session.djvr\" }, or nothing to choose one.",
+                [appWeak](const nlohmann::json& args)
                 {
                     if (auto app = appWeak.lock())
                     {
-                        app->openReviewDialog();
+                        if (args.is_object() && args.contains("path"))
+                        {
+                            app->openReview(ftk::toFileSystem(
+                                args.at("path").get<std::string>()));
+                        }
+                        else
+                        {
+                            app->openReviewDialog();
+                        }
                     }
                 });
 
             _addCommand(
                 "Save",
-                "Save the current session as a review.",
-                [appWeak](const nlohmann::json&)
+                "Save the current session as a review; e.g., "
+                "{ \"path\": \"session.djvr\" }, or nothing to save to the "
+                "review's own file.",
+                [appWeak](const nlohmann::json& args)
                 {
                     if (auto app = appWeak.lock())
                     {
-                        app->saveReview();
+                        if (args.is_object() && args.contains("path"))
+                        {
+                            app->saveReview(ftk::toFileSystem(
+                                args.at("path").get<std::string>()));
+                        }
+                        else
+                        {
+                            app->saveReview();
+                        }
                     }
                 });
 
@@ -210,12 +263,94 @@ namespace djv
             _addCommand(
                 "AddNote",
                 "Open the review tool and add a marker about the current "
-                "frame, edited in place.",
-                [mainWindowWeak](const nlohmann::json&)
+                "frame, edited in place; or, given the text, add it as it "
+                "is, e.g., { \"text\": \"Grade is too cold.\" }.",
+                [appWeak, mainWindowWeak](const nlohmann::json& args)
                 {
-                    if (auto mainWindow = mainWindowWeak.lock())
+                    if (args.is_object() && args.contains("text"))
+                    {
+                        if (auto app = appWeak.lock())
+                        {
+                            if (auto player = app->observePlayer()->get())
+                            {
+                                const OTIO_NS::RationalTime time = player->getCurrentTime();
+                                app->getMarkersModel()->add(
+                                    OTIO_NS::TimeRange(time, OTIO_NS::RationalTime(1.0, time.rate())),
+                                    std::string(),
+                                    args.at("text").get<std::string>());
+                            }
+                        }
+                    }
+                    else if (auto mainWindow = mainWindowWeak.lock())
                     {
                         mainWindow->addReviewNote();
+                    }
+                });
+
+            // Sync. The server comes from the settings unless given, and
+            // the session from the review's file name unless given, so the
+            // people sharing a review file land in the same session.
+            _addCommand(
+                "SyncConnect",
+                "Share the review's markers through a sync server session; "
+                "e.g., { \"server\": \"http://localhost:8787\", "
+                "\"session\": \"sh010\" }.",
+                [appWeak](const nlohmann::json& args)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        models::ReviewSync sync;
+                        sync.server = app->getSettingsModel()->getReview().syncServer;
+                        sync.session = defaultSyncSession(app);
+                        if (args.is_object())
+                        {
+                            if (args.contains("server"))
+                            {
+                                args.at("server").get_to(sync.server);
+                            }
+                            if (args.contains("session"))
+                            {
+                                args.at("session").get_to(sync.session);
+                            }
+                        }
+                        app->connectSync(sync);
+                    }
+                });
+
+            _addCommand(
+                "SyncDisconnect",
+                "Stop sharing the review's markers. The markers stay.",
+                [appWeak](const nlohmann::json&)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->disconnectSync();
+                    }
+                });
+
+            // The session's media: the file its markers are about, opened
+            // by whoever joins with nothing open.
+            _addCommand(
+                "SyncShareMedia",
+                "Make the current file the sync session's media, replacing "
+                "what it had.",
+                [appWeak](const nlohmann::json&)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->shareSyncMedia();
+                    }
+                });
+
+            _addCommand(
+                "SyncLoadMedia",
+                "Open the sync session's media, found through the network "
+                "media folder in the Review settings.",
+                [appWeak](const nlohmann::json&)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        app->loadSyncMedia();
                     }
                 });
 
@@ -301,6 +436,18 @@ namespace djv
             _actions["AddRange"] = ftk::Action::create(
                 "Add Range",
                 _command("AddRange"));
+            _actions["SyncConnect"] = ftk::Action::create(
+                "Connect Sync",
+                _command("SyncConnect"));
+            _actions["SyncDisconnect"] = ftk::Action::create(
+                "Disconnect Sync",
+                _command("SyncDisconnect"));
+            _actions["SyncShareMedia"] = ftk::Action::create(
+                "Share Current File with Sync",
+                _command("SyncShareMedia"));
+            _actions["SyncLoadMedia"] = ftk::Action::create(
+                "Load Sync Media",
+                _command("SyncLoadMedia"));
             _actions["PrevFrame"] = ftk::Action::create(
                 "Previous Marker",
                 "ReviewPrev",
@@ -380,6 +527,10 @@ namespace djv
             _addShortcut("ClearDrawing", "Clear drawing");
             _addShortcut("AddNote", "Add a marker");
             _addShortcut("AddRange", "Add a range");
+            _addShortcut("SyncConnect", "Connect sync");
+            _addShortcut("SyncDisconnect", "Disconnect sync");
+            _addShortcut("SyncShareMedia", "Share the current file with sync");
+            _addShortcut("SyncLoadMedia", "Load the sync media");
             // Shift and Control on the arrows are already taken by the X10 and
             // X100 frame steps.
             _addShortcut(
@@ -406,6 +557,8 @@ namespace djv
                     _actions["Save"]->setEnabled(!value.empty());
                     _actions["SaveAs"]->setEnabled(!value.empty());
                     _actions["Close"]->setEnabled(!value.empty());
+                    _p->hasFiles = !value.empty();
+                    _syncUpdate();
                 });
 
             auto drawModel = app->getDrawModel();
@@ -449,6 +602,21 @@ namespace djv
                     p.hasMarkerItems = !value.empty();
                     _actions["Export"]->setEnabled(
                         p.hasPlayer && p.hasMarkerItems);
+                });
+
+            p.syncObserver = ftk::Observer<models::SyncStatus>::create(
+                app->getSyncModel()->observeStatus(),
+                [this](const models::SyncStatus& value)
+                {
+                    _p->syncConnected = value.state != models::SyncState::Disconnected;
+                    _syncUpdate();
+                });
+            p.syncMediaObserver = ftk::Observer<std::optional<models::SyncMedia> >::create(
+                app->getSyncModel()->observeMedia(),
+                [this](const std::optional<models::SyncMedia>& value)
+                {
+                    _p->hasSyncMedia = value.has_value();
+                    _syncUpdate();
                 });
 
             p.markersObserver = ftk::ListObserver<int>::create(
@@ -529,6 +697,14 @@ namespace djv
             const bool enabled = p.hasPlayer && p.hasMarkers;
             _actions["PrevFrame"]->setEnabled(enabled);
             _actions["NextFrame"]->setEnabled(enabled);
+        }
+
+        void ReviewActions::_syncUpdate()
+        {
+            FTK_P();
+            _actions["SyncDisconnect"]->setEnabled(p.syncConnected);
+            _actions["SyncShareMedia"]->setEnabled(p.syncConnected && p.hasFiles);
+            _actions["SyncLoadMedia"]->setEnabled(p.syncConnected && p.hasSyncMedia);
         }
     }
 }

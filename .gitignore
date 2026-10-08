@@ -15,3 +15,7 @@ __pycache__/
 # Python wheel builds (pyproject.toml).
 build-wheel/
 dist/
+
+# The sync server's sessions and packages (server/).
+server/data/
+server/node_modules/

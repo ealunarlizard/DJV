@@ -178,6 +178,32 @@ namespace djv
             FTK_PRIVATE();
         };
 
+        //! Review settings widget: the notes over the video, and the sync
+        //! server.
+        class DJV_UI_API_TYPE ReviewSettingsWidget : public ISettingsWidget
+        {
+            FTK_NON_COPYABLE(ReviewSettingsWidget);
+
+        protected:
+            void _init(
+                const std::shared_ptr<ftk::Context>&,
+                const std::shared_ptr<models::SettingsModel>&,
+                const std::shared_ptr<IWidget>& parent);
+
+            ReviewSettingsWidget();
+
+        public:
+            DJV_UI_API virtual ~ReviewSettingsWidget();
+
+            DJV_UI_API static std::shared_ptr<ReviewSettingsWidget> create(
+                const std::shared_ptr<ftk::Context>&,
+                const std::shared_ptr<models::SettingsModel>&,
+                const std::shared_ptr<IWidget>& parent = nullptr);
+
+        private:
+            FTK_PRIVATE();
+        };
+
         //! Playback settings widget.
         class DJV_UI_API_TYPE PlaybackSettingsWidget : public ISettingsWidget
         {

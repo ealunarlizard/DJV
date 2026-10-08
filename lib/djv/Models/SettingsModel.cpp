@@ -116,6 +116,7 @@ namespace djv
             std::shared_ptr<ftk::Observable<MiscSettings> > misc;
             std::shared_ptr<ftk::Observable<MouseSettings> > mouse;
             std::shared_ptr<ftk::Observable<PlaybackSettings> > playback;
+            std::shared_ptr<ftk::Observable<ReviewSettings> > review;
             std::shared_ptr<ftk::Observable<StyleSettings> > style;
             std::shared_ptr<ftk::Observable<TimelineSettings> > timeline;
             std::shared_ptr<ftk::Observable<WindowSettings> > window;
@@ -184,6 +185,7 @@ namespace djv
                 { "Misc", "/Misc.3" },
                 { "Mouse", "/Mouse.1" },
                 { "Playback", "/Playback.1" },
+                { "Review", "/Review.1" },
                 { "Style", "/Style.2" },
                 { "Timeline", "/Timeline" },
                 { "Window", "/Window" },
@@ -320,6 +322,10 @@ namespace djv
             settings->getT(keys["Playback"], playback);
             p.playback = ftk::Observable<PlaybackSettings>::create(playback);
 
+            ReviewSettings review;
+            settings->getT(keys["Review"], review);
+            p.review = ftk::Observable<ReviewSettings>::create(review);
+
             StyleSettings style;
             settings->getT(keys["Style"], style);
             p.style = ftk::Observable<StyleSettings>::create(style);
@@ -427,6 +433,7 @@ namespace djv
             p.settings->setT(keys["Misc"], p.misc->get());
             p.settings->setT(keys["Mouse"], p.mouse->get());
             p.settings->setT(keys["Playback"], p.playback->get());
+            p.settings->setT(keys["Review"], p.review->get());
             p.settings->setT(keys["Style"], p.style->get());
             p.settings->setT(keys["Timeline"], p.timeline->get());
             p.settings->setT(keys["Window"], p.window->get());
@@ -460,6 +467,7 @@ namespace djv
             setMisc(miscSettings);
             setMouse(MouseSettings());
             setPlayback(PlaybackSettings());
+            setReview(ReviewSettings());
             setStyle(StyleSettings());
             setTimeline(TimelineSettings());
             setWindow(WindowSettings());
@@ -697,6 +705,21 @@ namespace djv
         void SettingsModel::setPlayback(const PlaybackSettings& value)
         {
             _p->playback->setIfChanged(value);
+        }
+
+        const ReviewSettings& SettingsModel::getReview() const
+        {
+            return _p->review->get();
+        }
+
+        std::shared_ptr<ftk::IObservable<ReviewSettings> > SettingsModel::observeReview() const
+        {
+            return _p->review;
+        }
+
+        void SettingsModel::setReview(const ReviewSettings& value)
+        {
+            _p->review->setIfChanged(value);
         }
 
         const StyleSettings& SettingsModel::getStyle() const
@@ -1020,6 +1043,15 @@ namespace djv
             json["StartPlayback"] = value.startPlayback;
         }
 
+        void to_json(nlohmann::json& json, const ReviewSettings& value)
+        {
+            json["ShowNotes"] = value.showNotes;
+            json["NoteDuration"] = value.noteDuration;
+            json["SyncServer"] = value.syncServer;
+            json["SyncToken"] = value.syncToken;
+            json["SyncMediaRoot"] = value.syncMediaRoot;
+        }
+
         void to_json(nlohmann::json& json, const StyleSettings& value)
         {
             json["DisplayScale"] = value.displayScale;
@@ -1219,6 +1251,20 @@ namespace djv
         void from_json(const nlohmann::json& json, PlaybackSettings& value)
         {
             json.at("StartPlayback").get_to(value.startPlayback);
+        }
+
+        void from_json(const nlohmann::json& json, ReviewSettings& value)
+        {
+            json.at("ShowNotes").get_to(value.showNotes);
+            json.at("NoteDuration").get_to(value.noteDuration);
+            json.at("SyncServer").get_to(value.syncServer);
+            json.at("SyncToken").get_to(value.syncToken);
+            // Added after the others: settings saved before it are read
+            // without it, rather than losing the server and the token.
+            if (json.contains("SyncMediaRoot"))
+            {
+                json.at("SyncMediaRoot").get_to(value.syncMediaRoot);
+            }
         }
 
         void from_json(const nlohmann::json& json, ShortcutsSettings& value)

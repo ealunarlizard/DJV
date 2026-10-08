@@ -51,6 +51,7 @@ namespace djv
                 app->getAnnotationsModel(),
                 app->getDrawModel(),
                 app->getSysLogModel());
+            p.viewport->setMarkersModel(app->getMarkersModel());
             p.viewport->setParent(shared_from_this());
 
             p.playerObserver = ftk::Observer<std::shared_ptr<tl::Player> >::create(

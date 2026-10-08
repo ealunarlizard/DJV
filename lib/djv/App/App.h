@@ -31,6 +31,8 @@ namespace djv
     {
         struct FilesModelItem;
         struct Review;
+        struct ReviewSync;
+        struct SyncMedia;
 
         class AnnotationsModel;
         class AppInfoModel;
@@ -41,6 +43,7 @@ namespace djv
         class FilesModel;
         class MarkersModel;
         class RecentFilesModel;
+        class SyncModel;
         class TimeUnitsModel;
         class ToolsModel;
         class ViewportModel;
@@ -126,6 +129,33 @@ namespace djv
 
             //! Get the drawing state model.
             const std::shared_ptr<models::DrawModel>& getDrawModel() const;
+
+            //! Get the sync model: the review's markers shared through a
+            //! sync server.
+            const std::shared_ptr<models::SyncModel>& getSyncModel() const;
+
+            //! Share the review's markers through a sync server session. The
+            //! session is saved in the review, so whoever opens it joins too.
+            //! Problems are reported in the log.
+            void connectSync(const models::ReviewSync&);
+
+            //! Stop sharing the review's markers. The markers stay.
+            void disconnectSync();
+
+            //! Make the current file the sync session's media, so that
+            //! whoever joins with nothing open gets it. Problems are
+            //! reported in the log.
+            void shareSyncMedia();
+
+            //! Open the sync session's media, found through the network
+            //! media folder of the settings. Problems are reported in the
+            //! log.
+            void loadSyncMedia();
+
+            //! Find the sync session's media on this machine. Reports whether
+            //! the file is there; when it is not, the path returned is the
+            //! one that was expected.
+            std::filesystem::path resolveSyncMedia(bool& exists) const;
 
             //! Observe the frames that carry a note or a drawing, sorted and
             //! deduplicated.
@@ -370,6 +400,9 @@ namespace djv
                 const models::Review&,
                 const std::filesystem::path& reviewPath);
             void _closeReview();
+            bool _connectSync(const models::ReviewSync&);
+            void _syncLocalMediaUpdate();
+            void _syncMediaUpdate(const std::optional<models::SyncMedia>&);
             //! Where the previous run's log was moved to; see ftk::App.
             std::filesystem::path _previousLogPath() const;
             //! What the session amounted to, written to the log as it ends.

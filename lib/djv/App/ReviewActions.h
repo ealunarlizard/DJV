@@ -13,6 +13,11 @@ namespace djv
     {
         class MainWindow;
 
+        //! The sync session a review joins when none is named: the one it
+        //! is in, then one named after its file.
+        std::string defaultSyncSession(const std::shared_ptr<App>&);
+
+
         //! Review actions.
         class DJV_APP_API_TYPE ReviewActions : public IActions
         {
@@ -37,6 +42,7 @@ namespace djv
         private:
             void _drawStateUpdate(const std::shared_ptr<App>&);
             void _markersUpdate();
+            void _syncUpdate();
 
             FTK_PRIVATE();
         };

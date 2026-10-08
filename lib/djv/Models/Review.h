@@ -213,8 +213,30 @@ namespace djv
             //! When the marker was made, ISO 8601.
             std::string created;
 
+            //! When its text or color last changed, ISO 8601. Empty until it
+            //! is first changed. Sync reports it; the order in which the
+            //! server receives the changes is what decides between two edits
+            //! of the same marker, since two machines' clocks need not agree.
+            std::string modified;
+
             DJV_MODELS_API bool operator == (const ReviewMarker&) const;
             DJV_MODELS_API bool operator != (const ReviewMarker&) const;
+        };
+
+        //! Where a review shares its markers with other people: a sync
+        //! server, and the session on it that the review belongs to.
+        //!
+        //! Stored in the review so that whoever opens the file joins the same
+        //! session. See server/README.md and docs/review-format.md.
+        struct DJV_MODELS_API_TYPE ReviewSync
+        {
+            //! The server, e.g. "http://localhost:8787".
+            std::string server;
+
+            //! The session on the server.
+            std::string session;
+
+            bool operator == (const ReviewSync&) const = default;
         };
 
         //! A complete review: files, comparison, view, color and interface state.
@@ -233,6 +255,9 @@ namespace djv
             ReviewUI                ui;
             std::vector<ReviewAnnotation> annotations;
             std::vector<ReviewMarker> markers;
+
+            //! The sync session, when the review shares its markers.
+            std::optional<ReviewSync> sync;
 
             //! The document as loaded, verbatim. Used to carry unknown top-level
             //! sections through a load/save cycle without loss. See
@@ -272,6 +297,7 @@ namespace djv
         DJV_MODELS_API void to_json(nlohmann::json&, const ReviewStroke&);
         DJV_MODELS_API void to_json(nlohmann::json&, const ReviewAnnotation&);
         DJV_MODELS_API void to_json(nlohmann::json&, const ReviewMarker&);
+        DJV_MODELS_API void to_json(nlohmann::json&, const ReviewSync&);
         DJV_MODELS_API void to_json(nlohmann::json&, const Review&);
 
         DJV_MODELS_API void from_json(const nlohmann::json&, ReviewFile&);
@@ -282,6 +308,7 @@ namespace djv
         DJV_MODELS_API void from_json(const nlohmann::json&, ReviewStroke&);
         DJV_MODELS_API void from_json(const nlohmann::json&, ReviewAnnotation&);
         DJV_MODELS_API void from_json(const nlohmann::json&, ReviewMarker&);
+        DJV_MODELS_API void from_json(const nlohmann::json&, ReviewSync&);
         DJV_MODELS_API void from_json(const nlohmann::json&, Review&);
 
         ///@}
