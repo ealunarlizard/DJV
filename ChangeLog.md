@@ -13,6 +13,10 @@ Changes:
 * A sync session keeps the media file its markers are about, named relative
   to a network media folder set on each machine, and joining a session with
   nothing open opens it.
+* DJV on a studio network: each PC has a client ID that the sync server's
+  admin registers on an admin page, and on Windows DJV maps the server's
+  media share to a drive letter chosen on each PC. The sync settings have a
+  section of their own, Sync Server. See the Studio network page.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 

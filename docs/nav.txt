@@ -16,6 +16,7 @@ playback.html Playback and frame control
 timeline.html Timeline
 compare.html A/B comparison
 reviews.html Review
+lan-setup.html Studio network
 color.html Color
 audio.html Audio
 tools.html Tools

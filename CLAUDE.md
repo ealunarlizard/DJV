@@ -157,17 +157,40 @@ The review markers (`MarkersModel`) can be shared live through
   that clients can catch up across a restart. Old `<session>.json` files are
   imported once at startup.
 - A session also holds its media (`SyncMedia`). The path is stored relative
-  to each client's `ReviewSettings::syncMediaRoot`, with the absolute path as
-  a fallback. `SyncMerger` gives a session that has no media the client's
-  current file when the snapshot arrives. `App::_syncMediaUpdate` opens the
-  session's media only when no file is open.
+  to the client's media root, with the absolute path as a fallback; a path
+  on a mapped drive is stored as its UNC form (`toUncPath`). `SyncMerger`
+  gives a session that has no media the client's current file when the
+  snapshot arrives. `App::_syncMediaUpdate` opens the session's media only
+  when no file is open.
+- Studio LAN (`docs/lan-setup.html`; the requests and history are in
+  `docs/lan/CHANGE_REQUESTS.md` and `docs/lan/CHANGELOG.md`, so add to
+  both when this area changes):
+  - The server's `server/config.js` handles `config.json`, which the admin
+    page (`server/admin.html`, `/api/admin/*`) also writes. It holds the
+    client registry (`requireRegistration`), the media share
+    (`storage.unc`), and the expected DJV version. `GET /api/hello`
+    reports all three to a client.
+  - Every request DJV makes carries `X-DJV-Client` (the configured client
+    ID) and `X-DJV-Version`. The per-connection `clientId` in change bodies
+    is separate, and still drives echo detection: two DJVs on one PC share
+    a client ID.
+  - The settings are `SyncSettings` (`/Sync.1`): server, token, client ID,
+    drive letter, cached share, media folder. `readSyncSettings()` moves the
+    old `SyncServer`/`SyncToken`/`SyncMediaRoot` keys out of the Review
+    section. `SettingsModel` needs UI systems in the context, so tests use
+    the free functions and `LanModel`'s observable constructor instead.
+  - `models::LanModel` runs hello (`fetchSyncServerInfo`, in
+    `SyncModel.cpp` with httplib) and the drive mapping
+    (`NetworkDrive.cpp`, `WNetAddConnection2`, linked with `mpr`) on
+    detached threads. It publishes the effective media root: the mapped
+    drive, or else `SyncSettings::mediaRoot`.
 - The `.djvr` `sync` section (`ReviewSync`) stores the server and session.
   `App` must disconnect before replacing or clearing the markers (see
   `_applyReview` and `_closeReview`). Otherwise the server would receive
   deletions for every marker.
 - `ui::Viewport::setMarkersModel()` draws the notes over the video and fades
   them out during playback. The `ReviewSettings` settings control whether
-  they are shown and for how long, plus the sync server and token.
+  they are shown and for how long.
 
 ### Python bindings
 
