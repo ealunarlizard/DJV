@@ -49,88 +49,80 @@
 </div>
 <p>On a studio network, a group of Windows PCs review the same media together. They all run the same version of DJV. Notes written on one PC appear on the others as they are typed. One server on the network, the <em>dev server</em>, does two jobs:</p>
 <ul>
-<li>It runs the <strong>sync server</strong>, which shares the review markers live (see <a href="reviews.html#sharing-markers">Sharing markers</a>). It decides which PCs are let in and tells them where the media is.</li>
+<li>It runs the <strong>sync server</strong>, in Docker, which shares the review markers live (see <a href="reviews.html#sharing-markers">Sharing markers</a>). The people who review sign in to it with a user name and a password, and it tells their DJV where the media is.</li>
 <li>It holds the <strong>media</strong> on a read-only network share.</li>
 </ul>
-<p>Each PC has a <em>client ID</em>, the name the server knows it by. The admin registers that ID on the server's admin page. When DJV starts, it contacts the server and maps the media share to a drive letter. Each PC chooses its own letter, and DJV opens the review media from that drive.</p>
+<p>The admin adds each reviewer on the server's admin page. A reviewer types their user name and password into DJV once. From then on DJV signs in by itself when it starts, and maps the media share to a drive letter. Each PC chooses its own letter, and DJV opens the review media from that drive.</p>
 <h2 id="how-it-fits-together">How it fits together</h2>
 <table>
 <tr><th>Where</th><th>What</th><th>Set up by</th></tr>
-<tr><td>Dev server</td><td>The sync server (<code>server/server.js</code>), listening on the network, for example <code>http://10.0.0.5:8787</code>.</td><td>Admin</td></tr>
-<tr><td>Dev server</td><td>The media, shared read-only, for example <code>\\10.0.0.5\media</code>.</td><td>Admin</td></tr>
-<tr><td>Dev server</td><td><code>server/config.json</code>, which holds the server name, the media share, the expected DJV version, and the registered client IDs. The admin page edits it.</td><td>Admin</td></tr>
-<tr><td>Each PC</td><td>DJV's <strong>Sync Server</strong> settings: the server address, this PC's client ID, and the drive letter for the media. They are kept in DJV's settings file.</td><td>Reviewer or IT</td></tr>
+<tr><td>Dev server</td><td>The sync server, a Docker container listening on <code>http://192.168.1.40:8877</code>.</td><td>Admin</td></tr>
+<tr><td>Dev server</td><td>The media, shared read-only as <code>\\192.168.1.40\media</code> to a Windows account called <code>djv</code>, which has a standard password.</td><td>Admin</td></tr>
+<tr><td>Dev server</td><td>The server's <code>data</code> folder. It holds <code>djv-sync.db</code> (the sessions and the sign-ins) and <code>config.json</code> (the settings and the users, with their passwords hashed). The admin page edits <code>config.json</code>.</td><td>Admin</td></tr>
+<tr><td>Dev server</td><td>The <code>secrets</code> folder. It holds the password of <code>lldjv</code>, the administrator, and the password of the share's <code>djv</code> account, one per file.</td><td>Admin</td></tr>
+<tr><td>Each PC</td><td>DJV's <strong>Sync Server</strong> settings: the server address, the user, and the drive letter for the media. They are kept in DJV's settings file. The password is kept in the Windows Credential Manager.</td><td>Reviewer or IT</td></tr>
 </table>
+<p>When a reviewer signs in, the server gives their DJV the share and the <code>djv</code> account's password. DJV maps the drive with that account, and Windows keeps the account for the server. The reviewers therefore never need the share's password, and the drive can still be mapped when the sync server is down.</p>
 <p>A session's markers name the media relative to the share. The same session therefore finds the same file on every PC, whatever letter each one mapped.</p>
 <h2 id="setting-up-the-dev-server">Setting up the dev server</h2>
+<p>The server comes as a package, <code>djv-sync-server-&lt;version&gt;.zip</code>, built from the DJV source with <code>server\build-package.ps1</code>. It holds the Docker image itself, so the dev server needs neither the source nor the internet. The full steps are in the package's <code>docs\docker-deploy.md</code>. In short, on the dev server:</p>
 <ol>
-<li><strong>Node.js.</strong> Install Node.js 22.13 or newer. The sync server needs nothing else; it keeps its sessions in a SQLite database built into Node.</li>
-<li><strong>The media share.</strong> Share the folder that holds the review media, for example as <code>media</code>, with read-only access for the reviewers. On Windows, this is under the folder's <strong>Properties &gt; Sharing &gt; Advanced Sharing</strong>, with <em>Read</em> permission only. The PCs reach it as <code>\\&lt;server address&gt;\media</code>. They connect with their own Windows account, or with credentials saved for the server (see <a href="#troubleshooting">Troubleshooting</a>).</li>
-<li><strong>The configuration.</strong> Copy <code>server/config.example.json</code> to <code>server/config.json</code> and set:
-<ul>
-<li><code>name</code>, shown to the reviewers.</li>
-<li><code>storage.unc</code>, the media share, for example <code>\\\\10.0.0.5\\media</code> (backslashes are doubled in JSON, or use <code>//10.0.0.5/media</code>).</li>
-<li><code>djvVersion</code>, the version every PC should run. A PC running another version is warned. Leave it empty to not check.</li>
-<li><code>requireRegistration</code> set to <code>true</code>, so that only registered PCs are let in.</li>
-</ul></li>
-<li><strong>The admin token.</strong> Set an admin token so that the admin page can be used from other machines. Use the <code>ADMIN_TOKEN</code> environment variable, or <code>adminToken</code> in the configuration. Without a token, the admin page only works on the dev server itself.</li>
-<li><strong>Start the server</strong> on the network address:
-<pre><code>set HOST=0.0.0.0
-set ADMIN_TOKEN=some-long-secret
-cd server
-npm start</code></pre>
-The log says where the configuration is, and gives the address of the admin page.</li>
-<li><strong>The firewall.</strong> Allow inbound TCP on the port (8787 by default) for the private network profile. For example, in an administrator prompt:
-<pre><code>netsh advfirewall firewall add rule name="DJV sync server" dir=in action=allow protocol=TCP localport=8787 profile=private</code></pre></li>
-<li><strong>Keep it running.</strong> To start the server with the machine, run it as a service, for example with <a href="https://nssm.cc">NSSM</a>: <code>nssm install DJVSync "C:\Program Files\nodejs\node.exe" --disable-warning=ExperimentalWarning C:\djv\server\server.js</code>, with the environment variables set in the service's <em>Environment</em> tab. A Task Scheduler task that runs at startup works too.</li>
+<li><strong>Docker Desktop.</strong> Install it, and in its settings turn on <em>Start Docker Desktop when you sign in to your computer</em>. The server's container restarts with Docker.</li>
+<li><strong>The package.</strong> Unzip it into a folder of its own, for example <code>C:\djv-sync</code>, and open a PowerShell there.</li>
+<li><strong>The passwords.</strong> Run <code>.\new-secrets.ps1</code>. It writes a strong password for <code>lldjv</code> into <code>secrets\lldjv_password.txt</code>, and the share's standard password into <code>secrets\share_password.txt</code>. To choose the share password yourself, run <code>.\new-secrets.ps1 -SharePassword '…'</code>. Keep the folder private: it is the only copy.</li>
+<li><strong>The media share.</strong> In a PowerShell started as an administrator, run <code>.\share-setup.ps1 -Path D:\Media</code>. It makes the <code>djv</code> account with the share password, shares the folder read-only to it as <code>media</code>, and opens the firewall for file sharing and for port 8877. <code>docs\share-setup.md</code> describes the same steps by hand.</li>
+<li><strong>Start the server</strong> with <code>.\start.ps1</code>. It loads the image, starts the container, and waits until the server answers.</li>
+<li><strong>Sign in to the admin page</strong> at <code>http://192.168.1.40:8877/admin</code>, as <code>lldjv</code>. Under <strong>Server settings</strong>, set the media share to <code>\\192.168.1.40\media</code> and the expected DJV version. Then add the reviewers under <strong>Users</strong>.</li>
 </ol>
-<div class="note">The sessions are in <code>server/data/djv-sync.db</code>. To back it up, copy it while the server is stopped, or use <code>sqlite3 djv-sync.db ".backup backup.db"</code> while it runs. See <code>server/README.md</code> for the details and the full API.</div>
+<p>The same package runs on any Windows PC with Docker Desktop. Try it on your own machine first: everything works the same at <code>http://localhost:8877</code>.</p>
+<div class="note"><code>.\backup.ps1</code> saves a copy of the database while the server runs, as the admin page's <strong>Download a backup</strong> does. To change the <code>lldjv</code> password, put the new one in its file and restart the server with <code>.\stop.ps1</code> then <code>.\start.ps1</code>. To change the share's password, put the new one in its file, run <code>share-setup.ps1</code> again, and restart the server. The PCs pick it up the next time they sign in. The server's own reference is <code>server/README.md</code> in the DJV source.</div>
 <h2 id="the-admin-page">The admin page</h2>
-<p>Open <code>http://&lt;dev server&gt;:8787/admin</code> in a browser. It shows:</p>
+<p>Open <code>http://192.168.1.40:8877/admin</code> in a browser and sign in as <code>lldjv</code>. Only that user can use the admin page. It shows:</p>
 <ul>
-<li><strong>Waiting for approval</strong>: PCs that contacted the server but are not registered, with their client ID, address and DJV version. Give one a name and click <strong>Approve</strong> to let it in. A PC that was refused keeps trying, so it joins within seconds without anyone touching it.</li>
-<li><strong>Registered clients</strong>: rename a client, remove it, or add one by its client ID before the PC has even asked. The table also shows each client's DJV version, address, when it was last seen, and how many sessions it has open. A version other than the expected one is flagged.</li>
-<li><strong>Connected now</strong>: who is following which session.</li>
+<li><strong>Users</strong>: the people who may sign in. To add one, give a user name (letters, digits, <code>.</code>, <code>_</code> and <code>-</code>), their name, and a password of at least 8 characters, then click <strong>Add user</strong>. Tell them the user name and password. You can rename a user in place. <strong>New password</strong> gives a user a new password and signs out their DJVs, which then ask for it. <strong>Remove</strong> signs the user out and stops them signing in. The table also shows when each user last signed in, from which PC, with which DJV version, and how many sessions they have open. A version other than the expected one is flagged.</li>
+<li><strong>Connected now</strong>: who is following which session, from which PC.</li>
 <li><strong>Sessions</strong>: each session with its media, its number of markers, and its number of changes.</li>
-<li><strong>Server settings</strong>: the name, the media share, the expected DJV version, and whether registration is required. They are saved to <code>config.json</code>.</li>
+<li><strong>Server settings</strong>: the name, the media share and its account, and the expected DJV version. They are saved to <code>config.json</code>. The page also says whether the share's password was loaded.</li>
+<li><strong>Database</strong>: <strong>Download a backup</strong> saves a copy of every session, which opens in any SQLite tool.</li>
 </ul>
 <h2 id="setting-up-a-pc">Setting up a PC</h2>
 <p>Open the <strong>Settings</strong> tool and the <strong>Sync Server</strong> section:</p>
 <table>
 <tr><th>Setting</th><th>Meaning</th></tr>
-<tr><td><strong>Server</strong></td><td>The sync server, for example <code>http://10.0.0.5:8787</code>.</td></tr>
-<tr><td><strong>Token</strong></td><td>The access token, if the server was started with <code>DJV_SYNC_TOKEN</code>. Usually empty on a studio network, where registration is the lock.</td></tr>
-<tr><td><strong>Client ID</strong></td><td>Who this PC is on the server, by default the computer name. It must be unique per PC, and is letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. Two DJVs on the same PC may share it.</td></tr>
+<tr><td><strong>Server</strong></td><td>The sync server. It is <code>http://192.168.1.40:8877</code> by default.</td></tr>
+<tr><td><strong>User</strong>, <strong>Password</strong></td><td>The user name and password the admin gave you. Click <strong>Sign in</strong>, or press <kbd>Enter</kbd> in the password. Once you are signed in, the password is kept in the Windows Credential Manager, and DJV signs in by itself at every start. <strong>Sign out</strong> forgets it.</td></tr>
 <tr><td><strong>Media drive</strong></td><td>The drive letter the media share is mapped to on this PC, for example <code>S:</code>. Only free letters are offered. Each PC chooses its own.</td></tr>
 <tr><td><strong>Media share</strong></td><td>The share the server last named. It is set on the admin page, and kept here so that the drive is mapped even when the server is down.</td></tr>
 <tr><td><strong>Media folder</strong></td><td>Where the media is when no drive is mapped: on a Mac or Linux PC, for example <code>/Volumes/media</code>, or on a PC that reaches the share some other way.</td></tr>
-<tr><td><strong>Contact the server and map the drive at start</strong></td><td>On by default.</td></tr>
+<tr><td><strong>Sign in and map the drive at start</strong></td><td>On by default.</td></tr>
 </table>
-<p>Click <strong>Check</strong>. The <strong>Server</strong> line says whether the server was reached and whether this PC is registered; the <strong>Drive</strong> line says whether the drive is mapped. A PC that is not registered yet now shows on the admin page, waiting for approval. Once the admin approves it, click <strong>Check</strong> again.</p>
-<p>These settings are kept in DJV's settings file (see <a href="settings.html">Settings</a>). To set up many PCs, set up one and copy its <code>Sync</code> section to the others, changing the client ID. <strong>Reset</strong> in the Settings tool leaves the server, the client ID and the drive alone.</p>
+<p>The line under the buttons says who you are signed in as. <strong>Check</strong> signs in again with the kept password and maps the drive. The <strong>Server</strong> line names the server, and the <strong>Drive</strong> line says whether the drive is mapped.</p>
+<p>These settings are kept in DJV's settings file (see <a href="settings.html">Settings</a>); the password is not. <strong>Reset</strong> in the Settings tool leaves the server, the user and the drive alone. Two DJVs on the same PC, or one person on several PCs, may use the same user.</p>
 <p><strong>Review/Check Sync Server</strong> and <strong>Review/Map Media Drive</strong> do the same from the menu, and as commands (<code>Review/SyncTestServer</code>, <code>Review/SyncMapDrive</code>) for automation.</p>
 <h2 id="reviewing-together">Reviewing together</h2>
 <ol>
-<li>Start DJV. It contacts the server and maps the drive, in the background.</li>
+<li>Start DJV. It signs in and maps the drive, in the background.</li>
 <li>Open the media from the mapped drive, for example <code>S:\shows\abc\sh010\sh010_v003.mov</code>.</li>
 <li>In the <strong>Review</strong> tool's <strong>Sync</strong> section, give a session name and click <strong>Connect</strong>. If the session has no media yet, the file you have open becomes its media.</li>
 <li>Everyone else connects to the same session. Those with nothing open get the session's media opened from their own drive, with the markers already written.</li>
 <li>Add notes as usual. Every addition, edit and deletion reaches the others within a moment.</li>
 </ol>
-<p>Save the review (<code>.djvr</code>) to come back to it: opening it joins the same session again.</p>
+<p>Save the review (<code>.djvr</code>) to come back to it: opening it joins the same session again, once DJV has signed in.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <table>
 <tr><th>What DJV says</th><th>What to do</th></tr>
-<tr><td>This PC (…) is not registered on the server.</td><td>Ask the admin to approve it on the admin page. DJV keeps trying and joins once approved.</td></tr>
-<tr><td>Cannot reach http://…</td><td>Check the server address, that the server is running, and the firewall rule. A cached share is still mapped, so files can be opened.</td></tr>
+<tr><td>Not signed in to the sync server.</td><td>Sign in in the <strong>Sync Server</strong> settings. A session that was refused joins as soon as you have signed in.</td></tr>
+<tr><td>The user name or the password is not right.</td><td>Type them again, or ask the admin for a new password. After 10 failures from one PC, the server waits a few minutes before it lets anyone sign in from it again.</td></tr>
+<tr><td>No password is kept on this PC; sign in.</td><td>Type the password once and click <strong>Sign in</strong>.</td></tr>
+<tr><td>Cannot reach http://…</td><td>Check the server address, that the server is running (<code>docker ps</code> on the dev server), and the firewall rule for port 8877. The share last named is still mapped, so files can be opened.</td></tr>
 <tr><td>S: is already mapped to …</td><td>The letter is used for another share. Choose another letter, or disconnect it in File Explorer (<strong>This PC &gt; Disconnect network drive</strong>).</td></tr>
 <tr><td>S: is used by a disk on this PC.</td><td>Choose another letter.</td></tr>
-<tr><td>Windows was not let in to \\…\media.</td><td>Give your Windows account read access to the share, or save credentials for the server: <code>cmdkey /add:10.0.0.5 /user:reviewer /pass</code>. DJV never stores a password.</td></tr>
-<tr><td>…already connected to the server … under another user name.</td><td>Windows allows one set of credentials per server. Disconnect the other connection (<code>net use</code> lists them), then click <strong>Check</strong>.</td></tr>
+<tr><td>Windows was not let in to \\…\media as …</td><td>The share's account or its password does not match the dev server's. Ask the admin to run <code>share-setup.ps1</code> again and restart the server.</td></tr>
+<tr><td>…already connected to the server … under another user name.</td><td>Windows allows one account per server at a time. Disconnect the other drives or folders open on the dev server (<code>net use</code> lists them), then click <strong>Check</strong>.</td></tr>
 <tr><td>The studio runs DJV 3.7.5; this PC runs 3.7.4.</td><td>Install the studio's version. Notes still sync, but every PC should run the same DJV.</td></tr>
 <tr><td>The sync session's media "…" cannot be found at "…".</td><td>The drive is not mapped yet, or the file is outside the share. Check the <strong>Drive</strong> line in the settings, then use <strong>Load</strong> in the Sync section.</td></tr>
 </table>
-<p>Everything DJV does on the network is written to the <strong>Messages</strong> tool, and the server writes its own log.</p>
+<p>Everything DJV does on the network is written to the <strong>Messages</strong> tool, and the server writes its own log (<code>docker compose logs</code> in the server's folder).</p>
 </main>
 </body>
 </html>

@@ -9,7 +9,50 @@ versions are this work's own (`lan-X.Y.Z`): the DJV version it is built on
 is given with each one, and the user-facing DJV changes are also in the
 root `ChangeLog.md`, under the DJV version.
 
-## [lan-0.1.0] - Unreleased
+## [lan-0.2.0] - Unreleased
+
+Built on DJV 3.7.5-dev, with sync server 2.0.0 (`server/package.json`).
+Branch `feature/lan-server`. The server's API changed: DJV and the server
+must both be this version.
+
+### Added
+
+- A Docker package for the sync server: an image built from
+  `server/Dockerfile`, and `dist/djv-sync-server-<version>.zip` from
+  `server/build-package.ps1`. The zip holds the image, the compose file and
+  the start, stop, backup, secrets and share scripts. The server listens on
+  8877, with its SQLite database and configuration in a `data` folder of the
+  host. (CR-013)
+- The admin page's **Download a backup**, and `backup.ps1`: a consistent
+  copy of the database while the server runs. (CR-013)
+- Users with passwords. People sign in with `POST /api/login` and get a
+  session token for every other request. Passwords are hashed with scrypt.
+  Failed sign-ins are throttled. (CR-014)
+- The administrator `lldjv`, made from a password file at every start. Only
+  `lldjv` uses the admin page, which now signs in and manages users. (CR-014)
+- **User**, **Password**, **Sign in** and **Sign out** in DJV's Sync Server
+  settings. The password is kept in the Windows Credential Manager, and DJV
+  signs in by itself at start. (CR-014)
+- The server gives signed-in DJVs the media share's account, and DJV maps
+  the drive with it and keeps it for the server in the Credential Manager.
+  (CR-015)
+- `share-setup.ps1` and `docs/lan/share-setup.md`, for sharing the media
+  folder read-only to a `djv` account with a standard password. (CR-016)
+- `docs/lan/docker-deploy.md`, the deployment guide. (CR-013)
+
+### Changed
+
+- DJV's default sync server is `http://192.168.1.40:8877`, and the server's
+  default port is 8877. (CR-013)
+- The client ID is only the PC's name, shown on the admin page; the client
+  registry, the waiting list and requireRegistration are gone. (CR-014,
+  supersedes CR-004's registry)
+- The admin token (`ADMIN_TOKEN`) and the shared access token
+  (`DJV_SYNC_TOKEN`, and DJV's **Token** setting) are gone; sign-ins replace
+  both. (CR-014)
+- Events carry the `user` who made them, in place of the `client`. (CR-014)
+
+## [lan-0.1.0] - 2026-10-08
 
 Built on DJV 3.7.5-dev, with sync server 1.1.0 (`server/package.json`).
 Branch `feature/lan-server`.

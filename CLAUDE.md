@@ -165,25 +165,48 @@ The review markers (`MarkersModel`) can be shared live through
 - Studio LAN (`docs/lan-setup.html`; the requests and history are in
   `docs/lan/CHANGE_REQUESTS.md` and `docs/lan/CHANGELOG.md`, so add to
   both when this area changes):
-  - The server's `server/config.js` handles `config.json`, which the admin
-    page (`server/admin.html`, `/api/admin/*`) also writes. It holds the
-    client registry (`requireRegistration`), the media share
-    (`storage.unc`), and the expected DJV version. `GET /api/hello`
-    reports all three to a client.
-  - Every request DJV makes carries `X-DJV-Client` (the configured client
-    ID) and `X-DJV-Version`. The per-connection `clientId` in change bodies
-    is separate, and still drives echo detection: two DJVs on one PC share
-    a client ID.
-  - The settings are `SyncSettings` (`/Sync.1`): server, token, client ID,
-    drive letter, cached share, media folder. `readSyncSettings()` moves the
-    old `SyncServer`/`SyncToken`/`SyncMediaRoot` keys out of the Review
-    section. `SettingsModel` needs UI systems in the context, so tests use
-    the free functions and `LanModel`'s observable constructor instead.
-  - `models::LanModel` runs hello (`fetchSyncServerInfo`, in
-    `SyncModel.cpp` with httplib) and the drive mapping
-    (`NetworkDrive.cpp`, `WNetAddConnection2`, linked with `mpr`) on
-    detached threads. It publishes the effective media root: the mapped
-    drive, or else `SyncSettings::mediaRoot`.
+  - People sign in: `POST /api/login` gives a session token, and every
+    other `/api/` request needs it as `Authorization: Bearer`, except
+    `health` and `hello`. Passwords are hashed with scrypt
+    (`server/users.js`), and only the tokens' SHA-256 is stored, in the
+    database's `tokens` table.
+  - `lldjv` is the only admin. Its password comes from
+    `ROOT_PASSWORD_FILE` at every start, and the server refuses to start
+    without one or an existing `lldjv`. Tests use `server/test/helpers.js`,
+    whose `start()` signs in as `lldjv` and whose `fetch` sends the token.
+  - `server/config.js` handles `config.json`, which the admin page
+    (`server/admin.html`, `/api/admin/*`) also writes. It holds the users,
+    the media share and its account (`storage.unc`, `storage.user`), and
+    the expected DJV version. The share's password comes from
+    `SHARE_PASSWORD_FILE`, is never written to the file, and is given in
+    `hello` to signed-in users only.
+  - Docker: `server/Dockerfile`, `server/deploy/` (compose, PowerShell
+    scripts) and `server/build-package.ps1`. On a Windows host the data
+    folder is a bind mount, so the compose file sets `DB_EXCLUSIVE=1` (WAL
+    with exclusive locking, no `-shm`). The secrets live in
+    `server/deploy/secrets/`, which is gitignored and must stay that way.
+  - Every request DJV makes carries `X-DJV-Client` (the PC's name, for the
+    admin page only) and `X-DJV-Version`. The per-connection `clientId` in
+    change bodies is separate, and still drives echo detection: two DJVs
+    can share a user.
+  - The settings are `SyncSettings` (`/Sync.1`): server (by default
+    `http://192.168.1.40:8877`), user, client ID, drive letter, cached
+    share, media folder. The password is in the Windows Credential Manager
+    (`Credentials.cpp`, advapi32), never in the settings.
+    `readSyncSettings()` moves the old `SyncServer`/`SyncMediaRoot` keys out
+    of the Review section. `SettingsModel` needs UI systems in the context,
+    so tests use the free functions and `LanModel`'s observable constructor
+    instead.
+  - `models::LanModel` runs the sign-in and hello (`syncLogin`,
+    `fetchSyncServerInfo`, in `SyncModel.cpp` with httplib) and the drive
+    mapping (`NetworkDrive.cpp`, `WNetAddConnection2` with the share's
+    account, linked with `mpr`) on detached threads. It publishes the auth
+    state with the session token, and the effective media root: the mapped
+    drive, or else `SyncSettings::mediaRoot`. `App` connects with the token,
+    connects again when it changes, and signs in again once when the server
+    refuses a token.
+  - `ui::PasswordEdit` is the masked field: ftk's `LineEdit` has no
+    password mode, and keeps undo history and copy.
 - The `.djvr` `sync` section (`ReviewSync`) stores the server and session.
   `App` must disconnect before replacing or clearing the markers (see
   `_applyReview` and `_closeReview`). Otherwise the server would receive
