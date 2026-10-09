@@ -60,10 +60,10 @@ assets.
 | [CR-010](#cr-010-encrypted-connections) | Encrypted connections | Proposed | |
 | [CR-011](#cr-011-shared-drawings) | Shared drawings | Proposed | |
 | [CR-012](#cr-012-open-from-the-media-drive) | Open from the media drive | Proposed | |
-| [CR-013](#cr-013-docker-package-for-the-sync-server) | Docker package for the sync server | Implemented | this branch, server commit |
-| [CR-014](#cr-014-user-accounts-with-passwords) | User accounts with passwords | Implemented | this branch, server and DJV commits |
-| [CR-015](#cr-015-share-credentials-from-the-server) | Share credentials from the server | Implemented (LAN check pending) | this branch, DJV commit |
-| [CR-016](#cr-016-sharing-the-media-folder) | Sharing the media folder | Implemented (share check pending) | this branch, server and docs commits |
+| [CR-013](#cr-013-docker-package-for-the-sync-server) | Docker package for the sync server | Implemented | `082518945` |
+| [CR-014](#cr-014-user-accounts-with-passwords) | User accounts with passwords | Implemented | `082518945`, `5f5a3b75b` |
+| [CR-015](#cr-015-share-credentials-from-the-server) | Share credentials from the server | Implemented (LAN check pending) | `5f5a3b75b` |
+| [CR-016](#cr-016-sharing-the-media-folder) | Sharing the media folder | Implemented (share check pending) | `082518945`, `bc741ef6a` |
 | [CR-017](#cr-017-notes-signed-by-the-signed-in-user) | Notes signed by the signed-in user | Proposed | |
 
 ## CR-001: Live marker sync
@@ -392,7 +392,7 @@ is mapped, so reviewers start where the media is.
 |---|---|
 | **Status** | Implemented |
 | **Requested** | 2026-10-09 |
-| **Implemented** | 2026-10-09, `feature/lan-server`, server commit |
+| **Implemented** | 2026-10-09, `feature/lan-server`, `082518945` |
 
 **Description.** The sync server is deployed with Docker on the dev server,
 a Windows machine with Docker Desktop at 192.168.1.40, on port 8877. It comes
@@ -445,7 +445,7 @@ the container.
 |---|---|
 | **Status** | Implemented |
 | **Requested** | 2026-10-09 |
-| **Implemented** | 2026-10-09, `feature/lan-server`, server and DJV commits |
+| **Implemented** | 2026-10-09, `feature/lan-server`, `082518945`, `5f5a3b75b` |
 
 **Description.** The server authenticates people with a user name and a
 password, not only a client ID. The administrator is the root user `lldjv`,
@@ -519,7 +519,7 @@ Credential Manager, and DJV signs in by itself.
 |---|---|
 | **Status** | Implemented (LAN check pending) |
 | **Requested** | 2026-10-09 |
-| **Implemented** | 2026-10-09, `feature/lan-server`, DJV commit |
+| **Implemented** | 2026-10-09, `feature/lan-server`, `5f5a3b75b` |
 
 **Description.** The media share is read with one Windows account, `djv`,
 which has a standard password. DJV maps the drive with that account
@@ -559,7 +559,7 @@ is set up on each PC.
 |---|---|
 | **Status** | Implemented (share check pending) |
 | **Requested** | 2026-10-09 |
-| **Implemented** | 2026-10-09, `feature/lan-server`, server and docs commits |
+| **Implemented** | 2026-10-09, `feature/lan-server`, `082518945`, `bc741ef6a` |
 
 **Description.** A document that describes how to share a folder with a new
 `djv` user that has a standard password. The password is kept in a local
