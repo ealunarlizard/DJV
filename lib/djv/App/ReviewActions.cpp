@@ -343,12 +343,12 @@ namespace djv
                     }
                 });
 
-            // The studio network: ask the server about this PC again, and map
-            // the media drive, as at start.
+            // The studio network: sign in again, and map the media drive, as
+            // at start.
             _addCommand(
                 "SyncTestServer",
-                "Ask the sync server whether this PC is registered and where "
-                "the media share is, then map the media drive.",
+                "Sign in to the sync server with the password kept on this PC, "
+                "ask it where the media share is, then map the media drive.",
                 [appWeak](const nlohmann::json&)
                 {
                     if (auto app = appWeak.lock())

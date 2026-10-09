@@ -31,6 +31,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace djv
@@ -81,18 +82,20 @@ namespace djv
                 });
         }
 
-        std::string syncUnregisteredMessage(const std::string& clientId)
+        bool isValidSyncUser(const std::string& value)
         {
-            return clientId.empty() ?
-                std::string("The server only lets in registered PCs; set this PC's client ID in the Sync Server settings.") :
-                std::string(ftk::Format("This PC ({0}) is not registered on the server; ask the admin to approve it.").
-                    arg(clientId));
+            // The same rules: a user name goes into the same URLs and logs.
+            return isValidSyncClientId(value);
         }
 
-        SyncServerInfo parseSyncServerInfo(const nlohmann::json& json)
+        std::string syncSignedOutMessage()
         {
-            SyncServerInfo out;
-            auto text = [](const nlohmann::json& object, const char* key)
+            return "Not signed in to the sync server; sign in in the Sync Server settings.";
+        }
+
+        namespace
+        {
+            std::string jsonText(const nlohmann::json& object, const char* key)
             {
                 if (!object.is_object())
                 {
@@ -100,8 +103,9 @@ namespace djv
                 }
                 const auto i = object.find(key);
                 return i != object.end() && i->is_string() ? i->get<std::string>() : std::string();
-            };
-            auto flag = [](const nlohmann::json& object, const char* key)
+            }
+
+            bool jsonFlag(const nlohmann::json& object, const char* key)
             {
                 if (!object.is_object())
                 {
@@ -109,22 +113,40 @@ namespace djv
                 }
                 const auto i = object.find(key);
                 return i != object.end() && i->is_boolean() && i->get<bool>();
-            };
-            const nlohmann::json none;
-            const auto storage = json.is_object() && json.contains("storage") ? json.at("storage") : none;
-            const auto client = json.is_object() && json.contains("client") ? json.at("client") : none;
-            out.name = text(json, "name");
-            out.serverVersion = text(json, "serverVersion");
-            out.djvVersion = text(json, "djvVersion");
-            out.requireRegistration = flag(json, "requireRegistration");
-            out.storageUnc = text(storage, "unc");
-            out.clientId = text(client, "id");
-            out.clientName = text(client, "name");
-            out.registered = flag(client, "registered");
-            if (out.requireRegistration && !out.registered)
+            }
+
+            nlohmann::json jsonObject(const nlohmann::json& object, const char* key)
             {
-                out.state = SyncServerState::Unregistered;
-                out.message = syncUnregisteredMessage(out.clientId);
+                if (object.is_object())
+                {
+                    const auto i = object.find(key);
+                    if (i != object.end() && i->is_object())
+                    {
+                        return *i;
+                    }
+                }
+                return nlohmann::json::object();
+            }
+        }
+
+        SyncServerInfo parseSyncServerInfo(const nlohmann::json& json)
+        {
+            SyncServerInfo out;
+            const nlohmann::json storage = jsonObject(json, "storage");
+            const nlohmann::json user = jsonObject(json, "user");
+            out.name = jsonText(json, "name");
+            out.serverVersion = jsonText(json, "serverVersion");
+            out.djvVersion = jsonText(json, "djvVersion");
+            out.authRequired = jsonFlag(json, "authRequired");
+            out.username = jsonText(user, "username");
+            out.userFullName = jsonText(user, "name");
+            out.storageUnc = jsonText(storage, "unc");
+            out.shareUser = jsonText(storage, "user");
+            out.sharePassword = jsonText(storage, "password");
+            if (out.authRequired && !jsonFlag(json, "signedIn"))
+            {
+                out.state = SyncServerState::SignedOut;
+                out.message = syncSignedOutMessage();
             }
             else
             {
@@ -694,25 +716,23 @@ namespace djv
                 return ftk::Format("HTTP {0}").arg(result->status);
             }
 
-            //! Whether an answer is the server refusing an unregistered PC.
-            bool isUnregistered(const httplib::Result& result)
+            //! The message in a refusal, when the server gave one.
+            std::string serverError(const httplib::Result& result)
             {
-                if (!result || result->status != 403)
+                if (result)
                 {
-                    return false;
+                    try
+                    {
+                        return jsonText(nlohmann::json::parse(result->body), "error");
+                    }
+                    catch (const std::exception&)
+                    {}
                 }
-                try
-                {
-                    const auto json = nlohmann::json::parse(result->body);
-                    return "unregistered" == json.value("code", std::string());
-                }
-                catch (const std::exception&)
-                {}
-                return false;
+                return std::string();
             }
 
-            //! The headers every request carries: the token, and who is
-            //! asking.
+            //! The headers every request carries: the session token, and
+            //! which DJV is asking.
             httplib::Headers syncHeaders(const std::string& token, const SyncIdentity& identity)
             {
                 httplib::Headers out;
@@ -742,8 +762,6 @@ namespace djv
                 httplib::Headers headers;
                 //! This connection, for telling our own changes coming back.
                 std::string clientId;
-                //! This PC, as the server knows it.
-                std::string clientName;
                 std::vector<Inbound> inbox;
                 std::deque<SyncOp> outbox;
                 //! The clients, so they can be stopped from the main thread
@@ -755,6 +773,26 @@ namespace djv
             };
         }
 
+        namespace
+        {
+            //! The server's address, checked: "http://" only.
+            std::optional<ServerURL> checkServer(const std::string& server, std::string& message)
+            {
+                if (server.empty())
+                {
+                    message = "No sync server is set.";
+                    return std::nullopt;
+                }
+                const ServerURL url = splitServer(server);
+                if (0 != url.schemeHostPort.compare(0, 7, "http://"))
+                {
+                    message = ftk::Format("\"{0}\" is not an http:// address.").arg(server);
+                    return std::nullopt;
+                }
+                return url;
+            }
+        }
+
         SyncServerInfo fetchSyncServerInfo(
             const std::string& server,
             const std::string& token,
@@ -763,35 +801,20 @@ namespace djv
             SyncServerInfo out;
             out.server = server;
             out.clientId = identity.clientId;
-            if (server.empty())
+            const auto url = checkServer(server, out.message);
+            if (!url.has_value())
             {
                 out.state = SyncServerState::Error;
-                out.message = "No sync server is set.";
                 return out;
             }
-            const ServerURL url = splitServer(server);
-            if (0 != url.schemeHostPort.compare(0, 7, "http://"))
-            {
-                out.state = SyncServerState::Error;
-                out.message = ftk::Format("\"{0}\" is not an http:// address.").arg(server);
-                return out;
-            }
-            httplib::Client client(url.schemeHostPort);
+            httplib::Client client(url->schemeHostPort);
             client.set_connection_timeout(connectTimeout);
             client.set_read_timeout(std::chrono::seconds(5));
-            const auto result = client.Get(url.prefix + "/api/hello", syncHeaders(token, identity));
+            const auto result = client.Get(url->prefix + "/api/hello", syncHeaders(token, identity));
             if (!result)
             {
                 out.state = SyncServerState::Unreachable;
                 out.message = ftk::Format("Cannot reach {0} ({1}).").arg(server).arg(errorMessage(result));
-                return out;
-            }
-            if (401 == result->status || 403 == result->status)
-            {
-                out.state = SyncServerState::Error;
-                out.message = 401 == result->status ?
-                    "The server needs a token; set it in the Sync Server settings." :
-                    "The server refused the token.";
                 return out;
             }
             if (result->status != 200)
@@ -807,17 +830,9 @@ namespace djv
             }
             try
             {
-                const std::string clientId = out.clientId;
                 out = parseSyncServerInfo(nlohmann::json::parse(result->body));
                 out.server = server;
-                if (out.clientId.empty())
-                {
-                    out.clientId = clientId;
-                    if (SyncServerState::Unregistered == out.state)
-                    {
-                        out.message = syncUnregisteredMessage(clientId);
-                    }
-                }
+                out.clientId = identity.clientId;
             }
             catch (const std::exception& e)
             {
@@ -825,6 +840,102 @@ namespace djv
                 out.message = ftk::Format("Unexpected reply: {0}").arg(e.what());
             }
             return out;
+        }
+
+        SyncLoginResult syncLogin(
+            const std::string& server,
+            const std::string& username,
+            const std::string& password,
+            const SyncIdentity& identity)
+        {
+            SyncLoginResult out;
+            const auto url = checkServer(server, out.message);
+            if (!url.has_value())
+            {
+                return out;
+            }
+            if (!isValidSyncUser(username))
+            {
+                out.message = username.empty() ?
+                    std::string("No user name is set.") :
+                    std::string(ftk::Format("\"{0}\" is not a user name: letters, digits, '.', '_' and '-' only.").
+                        arg(username));
+                return out;
+            }
+            if (password.empty())
+            {
+                out.message = "No password is set.";
+                return out;
+            }
+            httplib::Client client(url->schemeHostPort);
+            client.set_connection_timeout(connectTimeout);
+            client.set_read_timeout(std::chrono::seconds(10));
+            nlohmann::json body;
+            body["username"] = username;
+            body["password"] = password;
+            const auto result = client.Post(
+                url->prefix + "/api/login",
+                syncHeaders(std::string(), identity),
+                body.dump(),
+                "application/json");
+            if (!result)
+            {
+                out.unreachable = true;
+                out.message = ftk::Format("Cannot reach {0} ({1}).").arg(server).arg(errorMessage(result));
+                return out;
+            }
+            if (result->status != 200)
+            {
+                const std::string error = serverError(result);
+                if (404 == result->status)
+                {
+                    out.message = "The server is an older version without users; update it.";
+                }
+                else if (!error.empty())
+                {
+                    out.message = error;
+                }
+                else
+                {
+                    out.message = ftk::Format("The server answered {0}.").arg(errorMessage(result));
+                }
+                return out;
+            }
+            try
+            {
+                const nlohmann::json json = nlohmann::json::parse(result->body);
+                const nlohmann::json user = jsonObject(json, "user");
+                out.token = jsonText(json, "token");
+                out.username = jsonText(user, "username");
+                out.userFullName = jsonText(user, "name");
+                out.ok = !out.token.empty();
+                if (!out.ok)
+                {
+                    out.message = "The server signed in without giving a session token.";
+                }
+            }
+            catch (const std::exception& e)
+            {
+                out.message = ftk::Format("Unexpected reply: {0}").arg(e.what());
+            }
+            return out;
+        }
+
+        void syncLogout(
+            const std::string& server,
+            const std::string& token,
+            const SyncIdentity& identity)
+        {
+            std::string message;
+            const auto url = checkServer(server, message);
+            if (!url.has_value() || token.empty())
+            {
+                return;
+            }
+            httplib::Client client(url->schemeHostPort);
+            client.set_connection_timeout(connectTimeout);
+            client.set_read_timeout(std::chrono::seconds(5));
+            client.Post(url->prefix + "/api/logout", syncHeaders(token, identity), std::string(), "application/json");
         }
 
         struct SyncModel::Private
@@ -872,13 +983,11 @@ namespace djv
                 ServerURL url;
                 std::string session;
                 httplib::Headers headers;
-                std::string clientName;
                 {
                     std::unique_lock<std::mutex> lock(shared->mutex);
                     url = shared->url;
                     session = shared->session;
                     headers = shared->headers;
-                    clientName = shared->clientName;
                 }
                 const std::string base = url.prefix + "/api/sessions/" + session;
 
@@ -932,17 +1041,14 @@ namespace djv
                     }
                     else if (result && 401 == result->status)
                     {
-                        status(SyncState::Error, "The server needs a token; set it in the settings.");
-                    }
-                    else if (isUnregistered(result))
-                    {
-                        // Kept trying: once the admin approves this PC, it
-                        // joins without anyone having to click again.
-                        status(SyncState::Error, syncUnregisteredMessage(clientName));
+                        // Kept trying: once this DJV signs in, App
+                        // connects again with the new session token.
+                        status(SyncState::Error, syncSignedOutMessage());
                     }
                     else if (result && 403 == result->status)
                     {
-                        status(SyncState::Error, "The server refused the token.");
+                        const std::string error = serverError(result);
+                        status(SyncState::Error, error.empty() ? std::string("The server refused this user.") : error);
                     }
                     else if (result)
                     {
@@ -1221,7 +1327,6 @@ namespace djv
             p.shared->url = url;
             p.shared->session = sync.session;
             p.shared->clientId = p.merger->getClientId();
-            p.shared->clientName = identity.clientId;
             p.shared->headers = syncHeaders(token, identity);
 
             SyncStatus status;

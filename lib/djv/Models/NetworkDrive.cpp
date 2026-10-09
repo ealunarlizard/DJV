@@ -159,7 +159,31 @@ namespace djv
             return out;
         }
 
-        NetworkDriveResult mapNetworkDrive(const std::string& value, const std::string& unc)
+        std::string getUncHost(const std::string& unc)
+        {
+            if (unc.size() < 3 || !(('\\' == unc[0] || '/' == unc[0]) && ('\\' == unc[1] || '/' == unc[1])))
+            {
+                return std::string();
+            }
+            const size_t end = unc.find_first_of("\\/", 2);
+            return unc.substr(2, std::string::npos == end ? std::string::npos : end - 2);
+        }
+
+        std::string shareAccountName(const std::string& user, const std::string& unc)
+        {
+            if (user.empty() || user.find('\\') != std::string::npos || user.find('@') != std::string::npos)
+            {
+                return user;
+            }
+            const std::string host = getUncHost(unc);
+            return host.empty() ? user : host + "\\" + user;
+        }
+
+        NetworkDriveResult mapNetworkDrive(
+            const std::string& value,
+            const std::string& unc,
+            const std::string& user,
+            const std::string& password)
         {
             NetworkDriveResult out;
 #if defined(_WIN32)
@@ -217,9 +241,19 @@ namespace djv
             resource.dwType = RESOURCETYPE_DISK;
             resource.lpLocalName = local.data();
             resource.lpRemoteName = remote.data();
+            // The account the server gave, or, without one, whatever Windows
+            // has for the server: the user's own logon, or a credential
+            // saved for it.
+            const std::string account = shareAccountName(user, uncBack);
+            std::wstring waccount = ftk::toWide(account);
+            std::wstring wpassword = ftk::toWide(password);
             // No CONNECT_UPDATE_PROFILE: the mapping lasts for this logon and
             // is not restored by Windows, since DJV maps it when it starts.
-            const DWORD result = WNetAddConnection2W(&resource, nullptr, nullptr, 0);
+            const DWORD result = WNetAddConnection2W(
+                &resource,
+                account.empty() ? nullptr : wpassword.c_str(),
+                account.empty() ? nullptr : waccount.c_str(),
+                0);
             switch (result)
             {
             case NO_ERROR:
@@ -228,17 +262,26 @@ namespace djv
             case ERROR_ACCESS_DENIED:
             case ERROR_LOGON_FAILURE:
             case ERROR_INVALID_PASSWORD:
-                out.message = ftk::Format(
-                    "Windows was not let in to {0}: {1}. Ask the admin for read access to the "
-                    "share, or save the server's credentials in the Windows Credential Manager "
-                    "(e.g. cmdkey /add:server /user:name /pass).").
-                    arg(uncBack).
-                    arg(systemMessage(result));
+                out.message = account.empty() ?
+                    std::string(ftk::Format(
+                        "Windows was not let in to {0}: {1}. Sign in to the sync server, which "
+                        "gives DJV the share's account, or ask the admin for read access to the "
+                        "share.").
+                        arg(uncBack).
+                        arg(systemMessage(result))) :
+                    std::string(ftk::Format(
+                        "Windows was not let in to {0} as {1}: {2}. Ask the admin to check the "
+                        "share's account and password (see share-setup.md).").
+                        arg(uncBack).
+                        arg(account).
+                        arg(systemMessage(result)));
                 break;
             case ERROR_SESSION_CREDENTIAL_CONFLICT:
                 out.message = ftk::Format(
                     "This PC is already connected to the server of {0} under another user name, "
-                    "and Windows allows only one: {1}.").
+                    "and Windows allows only one at a time: {1}. Disconnect the other drives or "
+                    "folders open on that server (\"net use\" lists them), or sign out of "
+                    "Windows and back in, then map the drive again.").
                     arg(uncBack).
                     arg(systemMessage(result));
                 break;

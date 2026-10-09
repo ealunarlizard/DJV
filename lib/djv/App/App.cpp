@@ -195,6 +195,11 @@ namespace djv
             //! looked for again with every change to the session.
             std::optional<models::SyncMedia> syncAutoLoaded;
             std::string syncMediaRoot;
+            //! The session token the sync session was last joined with.
+            std::string syncToken;
+            //! The session token last found refused, so that DJV signs in
+            //! again once for it rather than with every retry.
+            std::string syncRefusedToken;
             std::shared_ptr<models::AnnotationsModel> annotationsModel;
             std::shared_ptr<models::DrawModel> drawModel;
             std::shared_ptr<ftk::ObservableList<int> > reviewMarkers;
@@ -236,6 +241,8 @@ namespace djv
             std::shared_ptr<ftk::ListObserver<models::ReviewAnnotation> > annotationsObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
             std::shared_ptr<ftk::Observer<std::string> > syncMediaRootObserver;
+            std::shared_ptr<ftk::Observer<models::LanAuth> > lanAuthObserver;
+            std::shared_ptr<ftk::Observer<models::SyncStatus> > syncSignedOutObserver;
             std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
             std::shared_ptr<ftk::ListObserver<std::string> > drawToolsObserver;
 
@@ -685,9 +692,10 @@ namespace djv
             FTK_P();
             try
             {
+                p.syncToken = p.lanModel->observeAuth()->get().token;
                 p.syncModel->connect(
                     value,
-                    p.settingsModel->getSync().token,
+                    p.syncToken,
                     p.lanModel->getIdentity());
             }
             catch (const std::exception& e)
@@ -3234,6 +3242,41 @@ namespace djv
                     p.syncAutoLoaded.reset();
                     _syncMediaUpdate(p.syncModel->observeMedia()->get());
                 });
+            // Signing in gives a new session token: a session joined
+            // before -- one opened with a review while DJV was still
+            // signing in, say -- joins again with it.
+            p.lanAuthObserver = ftk::Observer<models::LanAuth>::create(
+                p.lanModel->observeAuth(),
+                [this](const models::LanAuth& value)
+                {
+                    FTK_P();
+                    const auto sync = p.syncModel->getSync();
+                    if (models::LanAuthState::SignedIn == value.state &&
+                        value.token != p.syncToken &&
+                        sync.has_value())
+                    {
+                        _connectSync(sync.value());
+                    }
+                });
+            // A token the server no longer takes -- the admin gave the user
+            // a new password, or it went unused for a month -- is replaced
+            // by signing in again with the password kept on this PC. Once:
+            // if that is refused too, the person signs in by hand.
+            p.syncSignedOutObserver = ftk::Observer<models::SyncStatus>::create(
+                p.syncModel->observeStatus(),
+                [this](const models::SyncStatus& value)
+                {
+                    FTK_P();
+                    const models::LanAuth& auth = p.lanModel->observeAuth()->get();
+                    if (models::SyncState::Error == value.state &&
+                        models::syncSignedOutMessage() == value.message &&
+                        models::LanAuthState::SignedIn == auth.state &&
+                        auth.token != p.syncRefusedToken)
+                    {
+                        p.syncRefusedToken = auth.token;
+                        p.lanModel->start();
+                    }
+                });
             p.syncMediaObserver = ftk::Observer<std::optional<models::SyncMedia> >::create(
                 p.syncModel->observeMedia(),
                 [this](const std::optional<models::SyncMedia>& value)
@@ -3717,8 +3760,9 @@ namespace djv
                         value);
                 });
 
-            // On a studio network, find the sync server and map the media
-            // share, in the background: the window does not wait for either.
+            // On a studio network, sign in to the sync server and map the
+            // media share, in the background: the window does not wait for
+            // either.
             const models::SyncSettings& sync = p.settingsModel->getSync();
             if (sync.connectOnStart && !sync.server.empty())
             {

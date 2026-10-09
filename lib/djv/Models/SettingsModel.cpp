@@ -237,9 +237,10 @@ namespace djv
                 settings->getT(keys["Sync"], out);
                 return out;
             }
-            // The sync server, its token and the media folder were kept with
-            // the review settings before they had a section of their own;
-            // they move here the first time.
+            // The sync server and the media folder were kept with the review
+            // settings before they had a section of their own; they move
+            // here the first time. The token kept with them is not: the
+            // server now wants a user and a password instead.
             nlohmann::json json;
             if (settings->get(keys["Review"], json) && json.is_object())
             {
@@ -252,7 +253,6 @@ namespace djv
                     }
                 };
                 text("SyncServer", out.server);
-                text("SyncToken", out.token);
                 text("SyncMediaRoot", out.mediaRoot);
             }
             return out;
@@ -262,7 +262,7 @@ namespace djv
         {
             SyncSettings out;
             out.server = value.server;
-            out.token = value.token;
+            out.username = value.username;
             out.clientId = value.clientId;
             out.driveLetter = value.driveLetter;
             out.shareUnc = value.shareUnc;
@@ -1145,7 +1145,7 @@ namespace djv
         void to_json(nlohmann::json& json, const SyncSettings& value)
         {
             json["Server"] = value.server;
-            json["Token"] = value.token;
+            json["Username"] = value.username;
             json["ClientId"] = value.clientId;
             json["DriveLetter"] = value.driveLetter;
             json["ShareUnc"] = value.shareUnc;
@@ -1375,8 +1375,10 @@ namespace djv
                     {}
                 }
             };
+            // A "Token" kept by an earlier DJV, from before the server had
+            // users, is left unread.
             read("Server", value.server);
-            read("Token", value.token);
+            read("Username", value.username);
             read("ClientId", value.clientId);
             read("DriveLetter", value.driveLetter);
             read("ShareUnc", value.shareUnc);

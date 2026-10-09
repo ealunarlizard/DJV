@@ -210,7 +210,7 @@ namespace djv
         };
 
         //! Sync server settings widget: the server this PC reviews with, who
-        //! it is there, and the drive the media share is mapped to.
+        //! signs in to it, and the drive the media share is mapped to.
         class DJV_UI_API_TYPE SyncSettingsWidget : public ISettingsWidget
         {
             FTK_NON_COPYABLE(SyncSettingsWidget);

@@ -58,8 +58,13 @@ namespace djv
         //! '_' and '-', up to 64 of them. The server checks the same.
         DJV_MODELS_API bool isValidSyncClientId(const std::string&);
 
-        //! Who a DJV is on the sync server: the PC, as the admin registered
-        //! it, and the DJV it runs. Sent with every request.
+        //! Whether a user name can be used on the sync server: the same
+        //! letters, digits, '.', '_' and '-', up to 64 of them.
+        DJV_MODELS_API bool isValidSyncUser(const std::string&);
+
+        //! Which DJV is asking the sync server: the PC, by its name, and the
+        //! DJV it runs. Sent with every request, for the admin page; who may
+        //! do what is the signed-in user's token.
         struct DJV_MODELS_API_TYPE SyncIdentity
         {
             std::string clientId;
@@ -73,10 +78,12 @@ namespace djv
         {
             Unknown,
             Checking,
-            //! Reached, and this PC may use it.
+            //! Reached, and signed in (or the server does not ask for it).
             Ok,
-            //! Reached, but this PC is not registered; the admin approves it.
-            Unregistered,
+            //! Reached, but not signed in: no user or password is set.
+            SignedOut,
+            //! Reached, but the user name or the password was refused.
+            LoginFailed,
             //! Not reached, or not a sync server.
             Unreachable,
             Error
@@ -93,13 +100,23 @@ namespace djv
             //! The DJV version the studio runs; empty when not checked.
             std::string djvVersion;
 
-            //! The media share, e.g. "\\10.0.0.5\media"; empty when none.
-            std::string storageUnc;
+            //! Whether the server asks its users to sign in. Servers before
+            //! version 2 do not.
+            bool authRequired = false;
 
-            bool requireRegistration = false;
+            //! This PC's name, as sent to the server.
             std::string clientId;
-            std::string clientName;
-            bool registered = false;
+
+            //! Who is signed in: the user name and the person's name.
+            std::string username;
+            std::string userFullName;
+
+            //! The media share, e.g. "\\192.168.1.40\media", and the
+            //! Windows account it is mapped with, given to signed-in users
+            //! only. Empty when none. The password is held in memory only.
+            std::string storageUnc;
+            std::string shareUser;
+            std::string sharePassword;
 
             //! What went wrong, or a warning such as a version mismatch.
             std::string message;
@@ -108,13 +125,45 @@ namespace djv
         };
 
         //! Read the server's answer to hello. The state is Ok or
-        //! Unregistered.
+        //! SignedOut.
         DJV_MODELS_API SyncServerInfo parseSyncServerInfo(const nlohmann::json&);
 
-        //! Ask a sync server about itself and this PC. Blocks for as long
-        //! as the server takes, up to a few seconds, so it is called from a
-        //! thread of its own (see LanModel).
+        //! Ask a sync server about itself, as the user the session token
+        //! belongs to (none when empty). Blocks for as long as the server
+        //! takes, up to a few seconds, so it is called from a thread of its
+        //! own (see LanModel).
         DJV_MODELS_API SyncServerInfo fetchSyncServerInfo(
+            const std::string& server,
+            const std::string& token,
+            const SyncIdentity&);
+
+        //! The answer to signing in.
+        struct DJV_MODELS_API_TYPE SyncLoginResult
+        {
+            bool ok = false;
+
+            //! The server could not be reached, as opposed to refusing.
+            bool unreachable = false;
+
+            //! The session token, sent with every request from then on.
+            std::string token;
+            std::string username;
+            std::string userFullName;
+            std::string message;
+
+            bool operator == (const SyncLoginResult&) const = default;
+        };
+
+        //! Sign in to a sync server. Blocks like fetchSyncServerInfo().
+        DJV_MODELS_API SyncLoginResult syncLogin(
+            const std::string& server,
+            const std::string& username,
+            const std::string& password,
+            const SyncIdentity&);
+
+        //! Sign out: the server forgets the session token. Blocks like
+        //! fetchSyncServerInfo().
+        DJV_MODELS_API void syncLogout(
             const std::string& server,
             const std::string& token,
             const SyncIdentity&);
@@ -204,9 +253,9 @@ namespace djv
             SyncMedia      media;
         };
 
-        //! The words for a refusal from a server that only lets in
-        //! registered clients.
-        DJV_MODELS_API std::string syncUnregisteredMessage(const std::string& clientId);
+        //! The words for a refusal from a server that wants its users to
+        //! sign in.
+        DJV_MODELS_API std::string syncSignedOutMessage();
 
         //! The merge between the markers and a sync session, without the
         //! network: it is told what the server said and what the markers
@@ -321,10 +370,11 @@ namespace djv
             //! Observe the connection status.
             DJV_MODELS_API std::shared_ptr<ftk::IObservable<SyncStatus> > observeStatus() const;
 
-            //! Connect to a session, leaving any other first. The markers
-            //! already open are merged into the session: the ones it does
-            //! not have are sent to it. Throws if the server or the session
-            //! cannot be used.
+            //! Connect to a session, leaving any other first, as the user the
+            //! session token belongs to (see LanModel). The markers already
+            //! open are merged into the session: the ones it does not have
+            //! are sent to it. Throws if the server or the session cannot be
+            //! used.
             DJV_MODELS_API void connect(
                 const ReviewSync&,
                 const std::string& token,

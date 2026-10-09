@@ -3,6 +3,8 @@
 
 #include <djv/UI/SettingsWidgets.h>
 
+#include <djv/UI/PasswordEdit.h>
+
 #include <djv/Models/LanModel.h>
 #include <djv/Models/NetworkDrive.h>
 #include <djv/Models/SyncModel.h>
@@ -1106,9 +1108,11 @@ namespace djv
             std::vector<std::string> driveLetters;
 
             std::shared_ptr<ftk::LineEdit> serverEdit;
-            std::shared_ptr<ftk::LineEdit> tokenEdit;
-            std::shared_ptr<ftk::LineEdit> clientIdEdit;
-            std::shared_ptr<ftk::Label> clientIdLabel;
+            std::shared_ptr<ftk::LineEdit> usernameEdit;
+            std::shared_ptr<PasswordEdit> passwordEdit;
+            std::shared_ptr<ftk::PushButton> signInButton;
+            std::shared_ptr<ftk::PushButton> signOutButton;
+            std::shared_ptr<ftk::Label> authLabel;
             std::shared_ptr<ftk::ComboBox> driveComboBox;
             std::shared_ptr<ftk::Label> shareLabel;
             std::shared_ptr<ftk::FileEdit> mediaRootEdit;
@@ -1119,14 +1123,15 @@ namespace djv
             std::shared_ptr<ftk::FormLayout> layout;
 
             std::shared_ptr<ftk::Observer<models::SyncSettings> > settingsObserver;
+            std::shared_ptr<ftk::Observer<models::LanAuth> > authObserver;
             std::shared_ptr<ftk::Observer<models::SyncServerInfo> > serverInfoObserver;
             std::shared_ptr<ftk::Observer<models::LanDriveStatus> > driveObserver;
         };
 
         namespace
         {
-            //! An address or an identifier as typed, without the spaces a
-            //! paste brings along.
+            //! An address or a name as typed, without the spaces a paste
+            //! brings along.
             std::string trimmed(const std::string& value)
             {
                 const size_t start = value.find_first_not_of(" \t\r\n");
@@ -1176,21 +1181,33 @@ namespace djv
 
             p.serverEdit = ftk::LineEdit::create(context);
             p.serverEdit->setTooltip(
-                "The sync server, e.g. http://10.0.0.5:8787: the address of "
-                "the dev server and the port the sync server listens on.");
+                "The sync server, e.g. http://192.168.1.40:8877: the address "
+                "of the dev server and the port the sync server listens on.");
             ftk::setScreenshotTag(p.serverEdit, "Settings.Sync.Server");
 
-            p.tokenEdit = ftk::LineEdit::create(context);
-            p.tokenEdit->setTooltip(
-                "The access token, if the sync server asks for one.");
+            p.usernameEdit = ftk::LineEdit::create(context);
+            p.usernameEdit->setTooltip(
+                "Your user name on the sync server, as the admin set it up on "
+                "the server's admin page.");
+            ftk::setScreenshotTag(p.usernameEdit, "Settings.Sync.User");
 
-            p.clientIdEdit = ftk::LineEdit::create(context);
-            p.clientIdEdit->setTooltip(
-                "Who this PC is on the sync server: the admin registers this "
-                "identifier on the server's admin page. Unique per PC; letters, "
-                "digits, '.', '_' and '-'. The computer name by default.");
-            ftk::setScreenshotTag(p.clientIdEdit, "Settings.Sync.ClientId");
-            p.clientIdLabel = ftk::Label::create(context);
+            p.passwordEdit = PasswordEdit::create(context);
+            p.passwordEdit->setTooltip(
+                "Your password on the sync server. DJV keeps it in the Windows "
+                "Credential Manager once you have signed in, and signs in by "
+                "itself when it starts.");
+            ftk::setScreenshotTag(p.passwordEdit, "Settings.Sync.Password");
+
+            p.signInButton = ftk::PushButton::create(context, "Sign in");
+            ftk::setScreenshotTag(p.signInButton, "Settings.Sync.SignIn");
+            p.signOutButton = ftk::PushButton::create(context, "Sign out");
+            p.signOutButton->setTooltip(
+                "Sign out, and forget the password kept on this PC.");
+            auto buttonLayout = ftk::HorizontalLayout::create(context);
+            buttonLayout->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.signInButton->setParent(buttonLayout);
+            p.signOutButton->setParent(buttonLayout);
+            p.authLabel = ftk::Label::create(context);
 
             p.driveComboBox = ftk::ComboBox::create(context);
             p.driveComboBox->setTooltip(
@@ -1214,12 +1231,12 @@ namespace djv
 
             p.connectOnStartCheckBox = ftk::CheckBox::create(
                 context,
-                "Contact the server and map the drive at start");
+                "Sign in and map the drive at start");
 
             p.testButton = ftk::PushButton::create(context, "Check");
             p.testButton->setTooltip(
-                "Ask the server whether this PC is registered and where the "
-                "media share is, then map the drive.");
+                "Sign in with the password kept on this PC, ask the server "
+                "where the media share is, then map the drive.");
             ftk::setScreenshotTag(p.testButton, "Settings.Sync.Check");
             p.serverStatusLabel = ftk::Label::create(context);
             p.driveStatusLabel = ftk::Label::create(context);
@@ -1228,9 +1245,10 @@ namespace djv
             _setWidget(p.layout);
             p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
             p.layout->addRow("Server:", p.serverEdit);
-            p.layout->addRow("Token:", p.tokenEdit);
-            p.layout->addRow("Client ID:", p.clientIdEdit);
-            p.layout->addRow("", p.clientIdLabel);
+            p.layout->addRow("User:", p.usernameEdit);
+            p.layout->addRow("Password:", p.passwordEdit);
+            p.layout->addRow("", buttonLayout);
+            p.layout->addRow("", p.authLabel);
             p.layout->addRow("Media drive:", p.driveComboBox);
             p.layout->addRow("Media share:", p.shareLabel);
             p.layout->addRow("Media folder:", p.mediaRootEdit);
@@ -1247,17 +1265,43 @@ namespace djv
                 {
                     FTK_P();
                     p.serverEdit->setText(value.server);
-                    p.tokenEdit->setText(value.token);
-                    p.clientIdEdit->setText(value.clientId);
-                    p.clientIdLabel->setText(models::isValidSyncClientId(value.clientId) ?
-                        std::string() :
-                        std::string("Letters, digits, '.', '_' and '-' only, up to 64."));
+                    p.usernameEdit->setText(value.username);
                     _driveLettersUpdate();
                     p.shareLabel->setText(value.shareUnc.empty() ?
-                        std::string("Not known yet: click Check.") :
+                        std::string("Not known yet: sign in.") :
                         value.shareUnc);
                     p.mediaRootEdit->setPath(ftk::Path(value.mediaRoot));
                     p.connectOnStartCheckBox->setChecked(value.connectOnStart);
+                });
+
+            p.authObserver = ftk::Observer<models::LanAuth>::create(
+                lanModel->observeAuth(),
+                [this](const models::LanAuth& value)
+                {
+                    FTK_P();
+                    std::string text;
+                    switch (value.state)
+                    {
+                    case models::LanAuthState::SignedOut:
+                        text = value.message.empty() ? std::string("Not signed in.") : value.message;
+                        break;
+                    case models::LanAuthState::SigningIn:
+                        text = ftk::Format("Signing in as {0}...").arg(value.username);
+                        break;
+                    case models::LanAuthState::SignedIn:
+                        text = value.userFullName.empty() ?
+                            std::string(ftk::Format("Signed in as {0}.").arg(value.username)) :
+                            std::string(ftk::Format("Signed in as {0} ({1}).").
+                                arg(value.userFullName).
+                                arg(value.username));
+                        break;
+                    case models::LanAuthState::Failed:
+                        text = value.message;
+                        break;
+                    }
+                    p.authLabel->setText(wrapStatus(text));
+                    p.signInButton->setEnabled(value.state != models::LanAuthState::SigningIn);
+                    p.signOutButton->setEnabled(value.state == models::LanAuthState::SignedIn);
                 });
 
             p.serverInfoObserver = ftk::Observer<models::SyncServerInfo>::create(
@@ -1275,21 +1319,26 @@ namespace djv
                         text = "Checking...";
                         break;
                     case models::SyncServerState::Ok:
-                        text = ftk::Format("{0}{1}").
+                    case models::SyncServerState::SignedOut:
+                    case models::SyncServerState::LoginFailed:
+                        // What went wrong signing in is said beside the
+                        // sign-in; here, which server it is.
+                        text = ftk::Format("{0}{1}.").
                             arg(value.name.empty() ? std::string("Reached") : value.name).
-                            arg(value.requireRegistration ?
-                                std::string(ftk::Format(": registered as {0}.").
-                                    arg(value.clientName.empty() ? value.clientId : value.clientName)) :
-                                std::string("."));
+                            arg(value.serverVersion.empty() ? std::string() : " " + value.serverVersion);
+                        if (value.state != models::SyncServerState::Ok)
+                        {
+                            text += " Not signed in.";
+                        }
+                        else if (!value.message.empty())
+                        {
+                            text += " " + value.message;
+                        }
                         break;
-                    case models::SyncServerState::Unregistered:
                     case models::SyncServerState::Unreachable:
                     case models::SyncServerState::Error:
+                        text = value.message;
                         break;
-                    }
-                    if (!value.message.empty())
-                    {
-                        text = text.empty() ? value.message : text + " " + value.message;
                     }
                     p.serverStatusLabel->setText(wrapStatus(text));
                     p.testButton->setEnabled(value.state != models::SyncServerState::Checking);
@@ -1327,22 +1376,31 @@ namespace djv
                     p.settings->setSync(settings);
                 });
 
-            p.tokenEdit->setCallback(
+            p.usernameEdit->setCallback(
                 [this](const std::string& value)
                 {
                     FTK_P();
                     auto settings = p.settings->getSync();
-                    settings.token = value;
+                    settings.username = trimmed(value);
                     p.settings->setSync(settings);
                 });
 
-            p.clientIdEdit->setCallback(
-                [this](const std::string& value)
+            auto signIn = [this]
+            {
+                FTK_P();
+                _driveLettersUpdate();
+                p.lanModel->signIn(trimmed(p.usernameEdit->getText()), p.passwordEdit->getText());
+                // The password is with the model now, and, once it is
+                // taken, in the Credential Manager: not left on the screen.
+                p.passwordEdit->clearText();
+            };
+            p.signInButton->setClickedCallback(signIn);
+            p.passwordEdit->setCallback([signIn](const std::string&) { signIn(); });
+
+            p.signOutButton->setClickedCallback(
+                [this]
                 {
-                    FTK_P();
-                    auto settings = p.settings->getSync();
-                    settings.clientId = trimmed(value);
-                    p.settings->setSync(settings);
+                    _p->lanModel->signOut();
                 });
 
             p.driveComboBox->setIndexCallback(

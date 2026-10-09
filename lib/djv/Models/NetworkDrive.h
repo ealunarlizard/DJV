@@ -27,6 +27,16 @@ namespace djv
         //! "s", "S", "S:" or "S:\". Empty for anything else.
         DJV_MODELS_API std::string normalizeDriveLetter(const std::string&);
 
+        //! The server of a UNC path: "192.168.1.40" for
+        //! "\\192.168.1.40\media". Empty when it is not a UNC path.
+        DJV_MODELS_API std::string getUncHost(const std::string&);
+
+        //! A share account as Windows is to be given it: one alone, "djv",
+        //! is the server's own, "192.168.1.40\djv", so that a PC in a
+        //! domain does not look for it there. One with a domain or an "@"
+        //! is left as it is.
+        DJV_MODELS_API std::string shareAccountName(const std::string& user, const std::string& unc);
+
         //! Whether two UNC paths name the same share, ignoring case, the
         //! kind of slash, and a trailing one.
         DJV_MODELS_API bool isSameUncPath(const std::string&, const std::string&);
@@ -56,12 +66,16 @@ namespace djv
         //! mapped to the same share is left as it is; one mapped elsewhere,
         //! or used by a disk, is refused rather than taken over. Blocks while
         //! Windows reaches the server, which can take many seconds, so it is
-        //! called from a thread of its own (see LanModel). The credentials are
-        //! the user's own, or those saved for the server in the Windows
-        //! Credential Manager; DJV never stores a password.
+        //! called from a thread of its own (see LanModel). The share is
+        //! signed in to with the account given, which the sync server hands
+        //! to signed-in users; without one, with the user's own Windows
+        //! credentials or those saved for the server in the Credential
+        //! Manager (see saveShareCredential()).
         DJV_MODELS_API NetworkDriveResult mapNetworkDrive(
             const std::string& letter,
-            const std::string& unc);
+            const std::string& unc,
+            const std::string& user = std::string(),
+            const std::string& password = std::string());
 
         //! A path on a mapped drive as the UNC path it maps to, so that it
         //! can be found by a PC that has mapped the share to another letter,

@@ -18,6 +18,7 @@ set(HEADERS
     ExportWidgets.h
     InfoWidget.h
     MagnifyWidget.h
+    PasswordEdit.h
     ViewWidgets.h
     Viewport.h)
 set(HEADERS_PRIVATE)
@@ -44,6 +45,7 @@ set(SOURCE
     ExportWidgets.cpp
     InfoWidget.cpp
     MagnifyWidget.cpp
+    PasswordEdit.cpp
     ViewWidgets.cpp
     Viewport.cpp)
 

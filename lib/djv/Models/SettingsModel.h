@@ -300,18 +300,22 @@ namespace djv
         //! characters a client identifier can have.
         DJV_MODELS_API std::string defaultSyncClientId();
 
-        //! Sync server settings: the server this PC reviews with, who it is
-        //! there, and where it reaches the media.
+        //! Sync server settings: the server this PC reviews with, who signs
+        //! in to it, and where the media is reached.
         struct DJV_MODELS_API_TYPE SyncSettings
         {
-            //! The sync server, e.g. "http://10.0.0.5:8787".
-            std::string server = "http://localhost:8787";
+            //! The sync server. The default is the studio's dev server (see
+            //! docs/lan-setup.html), so that a new PC only needs a user name
+            //! and a password.
+            std::string server = "http://192.168.1.40:8877";
 
-            //! The access token the sync server asks for, if it asks for one.
-            std::string token;
+            //! The user who signs in to the server. The password is not
+            //! here: it is kept in the Windows Credential Manager (see
+            //! Credentials.h).
+            std::string username;
 
-            //! Who this PC is on the server; the admin registers it there.
-            //! Unique per PC: two DJVs on one PC may share it.
+            //! This PC's name, sent to the server for its admin page. It says
+            //! nothing about who may do what; the user does.
             std::string clientId = defaultSyncClientId();
 
             //! The drive letter the server's media share is mapped to, e.g.
@@ -319,8 +323,8 @@ namespace djv
             std::string driveLetter;
 
             //! The media share the server last said it has, e.g.
-            //! "\\10.0.0.5\media", kept so that the drive is mapped even when
-            //! the server cannot be reached at start.
+            //! "\\192.168.1.40\media", kept so that the drive is mapped even
+            //! when the server cannot be reached at start.
             std::string shareUnc;
 
             //! The folder where the media is reached when no drive is mapped:
@@ -342,7 +346,7 @@ namespace djv
         DJV_MODELS_API SyncSettings readSyncSettings(const std::shared_ptr<ftk::Settings>&);
 
         //! The sync settings after a reset: the PC's place on the studio
-        //! network -- who it is on the server, the server, the token, and
+        //! network -- the server, who signs in to it, this PC's name, and
         //! the drive it maps -- is not a preference, and survives it.
         DJV_MODELS_API SyncSettings resetSyncSettings(const SyncSettings&);
 

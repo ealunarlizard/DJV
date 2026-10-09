@@ -5,6 +5,7 @@
 
 #include <djv/ModelsTest/ModelsTestUtil.h>
 
+#include <djv/Models/Credentials.h>
 #include <djv/Models/LanModel.h>
 #include <djv/Models/MarkersModel.h>
 #include <djv/Models/NetworkDrive.h>
@@ -226,8 +227,10 @@ namespace djv
 
             models::SyncSettings sync;
             FTK_CHECK(models::isValidSyncClientId(sync.clientId));
+            FTK_CHECK("http://192.168.1.40:8877" == sync.server);
+            FTK_CHECK(sync.username.empty());
             sync.server = "http://10.0.0.5:8787";
-            sync.token = "secret";
+            sync.username = "anna";
             sync.clientId = "edit-bay-1";
             sync.driveLetter = "S";
             sync.shareUnc = "\\\\10.0.0.5\\media";
@@ -240,8 +243,11 @@ namespace djv
             // and does not lose the rest.
             json.erase("DriveLetter");
             json["ConnectOnStart"] = "yes";
+            // A token kept by an earlier DJV is not read.
+            json["Token"] = "old-secret";
             const auto partial = json.get<models::SyncSettings>();
             FTK_CHECK("edit-bay-1" == partial.clientId);
+            FTK_CHECK("anna" == partial.username);
             FTK_CHECK(partial.driveLetter.empty());
             FTK_CHECK(partial.connectOnStart);
 
@@ -257,7 +263,7 @@ namespace djv
             settings->set("/Review.1", older);
             auto moved = models::readSyncSettings(settings);
             FTK_CHECK("http://review:9000" == moved.server);
-            FTK_CHECK("old-secret" == moved.token);
+            FTK_CHECK(moved.username.empty());
             FTK_CHECK("//nas/old" == moved.mediaRoot);
             FTK_CHECK(models::isValidSyncClientId(moved.clientId));
 
@@ -269,6 +275,7 @@ namespace djv
             // and only that.
             const auto reset = models::resetSyncSettings(sync);
             FTK_CHECK("edit-bay-1" == reset.clientId);
+            FTK_CHECK("anna" == reset.username);
             FTK_CHECK("S" == reset.driveLetter);
             FTK_CHECK(sync.server == reset.server);
             FTK_CHECK(sync.shareUnc == reset.shareUnc);
@@ -285,6 +292,8 @@ namespace djv
             FTK_CHECK(!models::isValidSyncClientId(".."));
             FTK_CHECK(!models::isValidSyncClientId("edit bay"));
             FTK_CHECK(!models::isValidSyncClientId(std::string(65, 'a')));
+            FTK_CHECK(models::isValidSyncUser("anna.k"));
+            FTK_CHECK(!models::isValidSyncUser("anna k"));
 
             FTK_CHECK("S" == models::normalizeDriveLetter("s"));
             FTK_CHECK("S" == models::normalizeDriveLetter("S:"));
@@ -296,6 +305,16 @@ namespace djv
             FTK_CHECK(models::isSameUncPath("\\\\10.0.0.5\\Media\\", "//10.0.0.5/media"));
             FTK_CHECK(!models::isSameUncPath("\\\\10.0.0.5\\media", "\\\\10.0.0.6\\media"));
             FTK_CHECK(!models::isSameUncPath("", ""));
+
+            // The share's account is the server's own unless it says
+            // otherwise, so that a PC in a domain does not look it up there.
+            FTK_CHECK("192.168.1.40" == models::getUncHost("\\\\192.168.1.40\\media"));
+            FTK_CHECK("nas" == models::getUncHost("//nas/media/shots"));
+            FTK_CHECK(models::getUncHost("C:\\media").empty());
+            FTK_CHECK("192.168.1.40\\djv" == models::shareAccountName("djv", "\\\\192.168.1.40\\media"));
+            FTK_CHECK("STUDIO\\djv" == models::shareAccountName("STUDIO\\djv", "\\\\192.168.1.40\\media"));
+            FTK_CHECK("djv@studio.local" == models::shareAccountName("djv@studio.local", "\\\\nas\\media"));
+            FTK_CHECK(models::shareAccountName("", "\\\\nas\\media").empty());
 
             // A path not on a mapped drive is left as it is.
             FTK_CHECK("relative/a.mov" == models::toUncPath("relative/a.mov"));
@@ -317,26 +336,36 @@ namespace djv
             FTK_CHECK(!models::mapNetworkDrive("S", "//server/media").ok);
 #endif // _WIN32
 
-            // What the server says, read.
+            // What the server says, read: to a signed-in user, where the
+            // media is and how to sign in to it.
             nlohmann::json hello;
             hello["name"] = "Dev review server";
-            hello["serverVersion"] = "1.1.0";
+            hello["serverVersion"] = "2.0.0";
             hello["djvVersion"] = "3.7.5";
-            hello["requireRegistration"] = true;
-            hello["storage"] = { { "unc", "\\\\10.0.0.5\\media" } };
-            hello["client"] = { { "id", "edit-bay-1" }, { "name", "Edit bay 1" }, { "registered", true } };
+            hello["authRequired"] = true;
+            hello["signedIn"] = true;
+            hello["user"] = { { "username", "anna" }, { "name", "Anna" }, { "admin", false } };
+            hello["storage"] = { { "unc", "\\\\192.168.1.40\\media" }, { "user", "djv" }, { "password", "share-password" } };
             auto info = models::parseSyncServerInfo(hello);
             FTK_CHECK(models::SyncServerState::Ok == info.state);
             FTK_CHECK("Dev review server" == info.name);
-            FTK_CHECK("\\\\10.0.0.5\\media" == info.storageUnc);
+            FTK_CHECK("2.0.0" == info.serverVersion);
+            FTK_CHECK("\\\\192.168.1.40\\media" == info.storageUnc);
+            FTK_CHECK("djv" == info.shareUser);
+            FTK_CHECK("share-password" == info.sharePassword);
             FTK_CHECK("3.7.5" == info.djvVersion);
-            FTK_CHECK("Edit bay 1" == info.clientName);
-            hello["client"]["registered"] = false;
-            info = models::parseSyncServerInfo(hello);
-            FTK_CHECK(models::SyncServerState::Unregistered == info.state);
-            FTK_CHECK(info.message.find("edit-bay-1") != std::string::npos);
-            hello["requireRegistration"] = false;
-            FTK_CHECK(models::SyncServerState::Ok == models::parseSyncServerInfo(hello).state);
+            FTK_CHECK("anna" == info.username);
+            FTK_CHECK("Anna" == info.userFullName);
+            // Not signed in: nothing about the share, and what to do.
+            nlohmann::json anonymous;
+            anonymous["name"] = "Dev review server";
+            anonymous["authRequired"] = true;
+            anonymous["signedIn"] = false;
+            info = models::parseSyncServerInfo(anonymous);
+            FTK_CHECK(models::SyncServerState::SignedOut == info.state);
+            FTK_CHECK(info.storageUnc.empty());
+            FTK_CHECK(models::syncSignedOutMessage() == info.message);
+            // A server from before users asks nobody to sign in.
             FTK_CHECK(models::SyncServerState::Ok == models::parseSyncServerInfo(nlohmann::json()).state);
 
             // A server that is not there.
@@ -344,6 +373,34 @@ namespace djv
             FTK_CHECK(models::SyncServerState::Unreachable == info.state);
             FTK_CHECK(models::SyncServerState::Error == models::fetchSyncServerInfo("", "", {}).state);
             FTK_CHECK(models::SyncServerState::Error == models::fetchSyncServerInfo("ftp://x", "", {}).state);
+
+            // Signing in to a server that is not there, or with nothing to
+            // sign in with.
+            auto login = models::syncLogin("http://127.0.0.1:9", "anna", "anna-password", {});
+            FTK_CHECK(!login.ok);
+            FTK_CHECK(login.unreachable);
+            login = models::syncLogin("http://127.0.0.1:9", "", "anna-password", {});
+            FTK_CHECK(!login.ok);
+            FTK_CHECK(!login.unreachable);
+            FTK_CHECK(!models::syncLogin("http://127.0.0.1:9", "anna", "", {}).ok);
+            FTK_CHECK(!models::syncLogin("ftp://x", "anna", "anna-password", {}).ok);
+
+            // The password kept, read back, and forgotten.
+            const std::string target = "http://djv-test-" + models::generateId().substr(0, 8);
+            FTK_CHECK(models::loadSyncPassword(target, "anna").empty());
+            if (models::isCredentialStoreSupported())
+            {
+                std::string error;
+                FTK_CHECK(models::saveSyncPassword(target, "anna", "p\xc3\xa4ssword-1", &error));
+                FTK_CHECK("p\xc3\xa4ssword-1" == models::loadSyncPassword(target, "anna"));
+                FTK_CHECK(models::loadSyncPassword(target, "ben").empty());
+                models::forgetSyncPassword(target, "anna");
+                FTK_CHECK(models::loadSyncPassword(target, "anna").empty());
+            }
+            else
+            {
+                FTK_CHECK(!models::saveSyncPassword(target, "anna", "x"));
+            }
 
             // The model: without a drive letter there is nothing to map, and
             // the media is found in the media folder of the settings.
@@ -364,11 +421,14 @@ namespace djv
             FTK_CHECK(models::LanDriveState::None == lan->observeDrive()->get().state);
 
             // A server that cannot be reached is reported, and the share last
-            // named is what would be mapped.
+            // named is what would be mapped. With no password kept for the
+            // user, DJV is not signed in, and says so.
             sync.shareUnc = "\\\\10.255.255.1\\media";
+            sync.username = "djv-test-nobody-" + models::generateId().substr(0, 8);
             syncSettings->setIfChanged(sync);
             lan->start();
             FTK_CHECK(models::SyncServerState::Checking == lan->observeServerInfo()->get().state);
+            FTK_CHECK(models::LanAuthState::SigningIn == lan->observeAuth()->get().state);
             const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
             while (models::SyncServerState::Checking == lan->observeServerInfo()->get().state &&
                 std::chrono::steady_clock::now() < end)
@@ -377,7 +437,25 @@ namespace djv
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             FTK_CHECK(models::SyncServerState::Unreachable == lan->observeServerInfo()->get().state);
+            FTK_CHECK(models::LanAuthState::SignedOut == lan->observeAuth()->get().state);
+            FTK_CHECK(!lan->observeAuth()->get().message.empty());
+            FTK_CHECK(lan->observeAuth()->get().token.empty());
             FTK_CHECK(models::LanDriveState::None == lan->observeDrive()->get().state);
+
+            // Signing in to a server that cannot be reached: the user is
+            // kept, and DJV is not signed in, but nothing says the password
+            // was wrong.
+            lan->signIn("anna", "anna-password");
+            FTK_CHECK("anna" == syncSettings->get().username);
+            const auto end2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (models::LanAuthState::SigningIn == lan->observeAuth()->get().state &&
+                std::chrono::steady_clock::now() < end2)
+            {
+                _context->tick();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            FTK_CHECK(models::LanAuthState::SignedOut == lan->observeAuth()->get().state);
+            FTK_CHECK(models::loadSyncPassword(sync.server, "anna").empty());
             _print("  lan -> ok");
         }
 
@@ -659,20 +737,54 @@ namespace djv
             }
             const std::string session = "test-" + models::generateId();
 
-            // The server says who it is; a server that only lets in
-            // registered PCs says this one is not, and what to do.
-            const auto info = models::fetchSyncServerInfo(
-                server,
-                std::string(),
-                models::SyncIdentity{ "djv-test-" + models::generateId().substr(0, 8), "test" });
+            // The server says who it is, and asks this DJV to sign in: as
+            // the user DJV_SYNC_TEST_USER, with DJV_SYNC_TEST_PASSWORD,
+            // which the admin adds on the server's admin page.
+            const models::SyncIdentity identity{ "djv-test-" + models::generateId().substr(0, 8), "test" };
+            auto info = models::fetchSyncServerInfo(server, std::string(), identity);
             FTK_CHECK(
                 models::SyncServerState::Ok == info.state ||
-                models::SyncServerState::Unregistered == info.state);
-            if (models::SyncServerState::Unregistered == info.state)
+                models::SyncServerState::SignedOut == info.state);
+            std::string token;
+            if (info.authRequired)
             {
-                FTK_CHECK(info.message.find("djv-test-") != std::string::npos);
-                _print("  live: the server only lets in registered PCs; the rest is skipped");
-                return;
+                std::string user;
+                std::string password;
+                ftk::getEnv("DJV_SYNC_TEST_USER", user);
+                ftk::getEnv("DJV_SYNC_TEST_PASSWORD", password);
+                FTK_CHECK(!models::syncLogin(server, user.empty() ? "nobody" : user, "not-the-password", identity).ok);
+                if (user.empty() || password.empty())
+                {
+                    _print("  live: the server wants users to sign in, and DJV_SYNC_TEST_USER and "
+                        "DJV_SYNC_TEST_PASSWORD are not set; the rest is skipped");
+                    return;
+                }
+                const auto login = models::syncLogin(server, user, password, identity);
+                FTK_CHECK(login.ok);
+                FTK_CHECK(user == login.username);
+                token = login.token;
+                info = models::fetchSyncServerInfo(server, token, identity);
+                FTK_CHECK(models::SyncServerState::Ok == info.state);
+                FTK_CHECK(user == info.username);
+                _print(ftk::Format("  live: signed in as {0}; the share is \"{1}\", mapped as {2}").
+                    arg(user).
+                    arg(info.storageUnc).
+                    arg(info.shareUser));
+
+                // Without the token, the session is refused, and the reason
+                // is the one App acts on.
+                auto modelX = models::MarkersModel::create();
+                auto syncX = models::SyncModel::create(_context, modelX);
+                syncX->connect(models::ReviewSync{ server, session }, std::string(), identity);
+                const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                while (syncX->observeStatus()->get().state != models::SyncState::Error &&
+                    std::chrono::steady_clock::now() < end)
+                {
+                    _context->tick();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                FTK_CHECK(models::syncSignedOutMessage() == syncX->observeStatus()->get().message);
+                syncX->disconnect();
             }
 
             // Run the timers until the condition holds, or give up.
@@ -695,13 +807,13 @@ namespace djv
             auto modelA = models::MarkersModel::create();
             modelA->upsert(makeMarker("before", "Made before joining."));
             auto syncA = models::SyncModel::create(_context, modelA);
-            syncA->connect(models::ReviewSync{ server, session }, std::string());
+            syncA->connect(models::ReviewSync{ server, session }, token, identity);
             FTK_CHECK(waitFor([&] { return connected(syncA); }));
 
             // The second gets it when joining.
             auto modelB = models::MarkersModel::create();
             auto syncB = models::SyncModel::create(_context, modelB);
-            syncB->connect(models::ReviewSync{ server, session }, std::string());
+            syncB->connect(models::ReviewSync{ server, session }, token, identity);
             FTK_CHECK(waitFor([&] { return connected(syncB) && findMarker(modelB, "before"); }));
 
             // Changes go both ways, live: an addition, an edit, a removal.
