@@ -3,29 +3,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { createSyncServer } from '../server.js';
-
-async function start(options = {}) {
-  const dataDir = options.dataDir ?? await mkdtemp(path.join(tmpdir(), 'djv-sync-'));
-  const server = createSyncServer({ dataDir, ...options });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  return {
-    server,
-    base,
-    dataDir,
-    async stop({ keepData = false } = {}) {
-      await new Promise((resolve) => server.close(resolve));
-      if (!keepData) {
-        await rm(dataDir, { recursive: true, force: true });
-      }
-    },
-  };
-}
+// The fetch that signs in as the test server's administrator.
+import { fetch, start } from './helpers.js';
 
 function marker(id, text, extra = {}) {
   return {
@@ -200,10 +183,8 @@ test('sessions are kept across a restart, with the changes for catching up', asy
 
 test('a change is written before it is answered', async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'djv-sync-'));
-  const first = createSyncServer({ dataDir });
-  await new Promise((resolve) => first.listen(0, '127.0.0.1', resolve));
-  const base = `http://127.0.0.1:${first.address().port}`;
-  await put(base, 'sh010', marker('m1', 'at once'));
+  const first = await start({ dataDir });
+  await put(first.base, 'sh010', marker('m1', 'at once'));
 
   // A second server on the same database, while the first still runs: what
   // it reads is only what was written.
@@ -213,7 +194,7 @@ test('a change is written before it is answered', async () => {
     assert.equal(state.rev, 1);
     assert.equal(state.markers[0].text, 'at once');
   } finally {
-    await new Promise((resolve) => first.close(resolve));
+    await first.stop({ keepData: true });
     await s.stop();
   }
 });
@@ -277,24 +258,6 @@ test('the list of sessions', async () => {
     await put(s.base, 'a-session', marker('m2', 'two'));
     const { sessions } = await (await fetch(`${s.base}/api/sessions`)).json();
     assert.deepEqual(sessions.map((i) => [i.session, i.markers, i.media]), [['a-session', 2, null], ['b-session', 1, null]]);
-  } finally {
-    await s.stop();
-  }
-});
-
-test('a token, when set, is required', async () => {
-  const s = await start({ token: 'secret' });
-  try {
-    assert.equal((await fetch(`${s.base}/api/health`)).status, 200);
-    assert.equal((await fetch(`${s.base}/api/sessions/sh010`)).status, 401);
-    assert.equal((await fetch(`${s.base}/api/sessions/sh010`, {
-      headers: { Authorization: 'Bearer wrong' },
-    })).status, 403);
-    assert.equal((await fetch(`${s.base}/api/sessions/sh010`, {
-      headers: { Authorization: 'Bearer secret' },
-    })).status, 200);
-    assert.equal((await put(s.base, 'sh010', marker('m1', 'x'))).status, 401);
-    assert.equal((await put(s.base, 'sh010', marker('m1', 'x'), 'a', { Authorization: 'Bearer secret' })).status, 200);
   } finally {
     await s.stop();
   }
@@ -367,8 +330,8 @@ test('a session keeps the media it is about', async () => {
     assert.deepEqual(await res.json(), { rev: 3 });
 
     const [set, cleared] = await events;
-    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', client: '', media: shot });
-    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', client: '', media: null });
+    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', user: 'lldjv', media: shot });
+    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', user: 'lldjv', media: null });
 
     await putMedia(s.base, 'sh010', shot);
     const state = await (await fetch(`${s.base}/api/sessions/sh010`)).json();

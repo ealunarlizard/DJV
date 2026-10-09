@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright Contributors to the DJV project.
+
+# The DJV sync server on the studio's dev server. Run from this folder with
+# start.ps1 (or "docker compose up -d"); see README.md.
+#
+# Everything the server keeps is in ./data on the host: djv-sync.db (the
+# sessions and the sign-ins) and config.json (the settings and the users).
+# The passwords are in ./secrets, made by new-secrets.ps1, and reach the
+# container as Docker secrets: they are in neither the image nor its
+# environment.
+
+name: djv-sync
+
+services:
+  djv-sync:
+    image: djv-sync-server:${DJV_SYNC_VERSION:-latest}
+    container_name: djv-sync
+    restart: unless-stopped
+    ports:
+      - "${DJV_PORT:-8877}:8877"
+    environment:
+      TZ: ${TZ:-UTC}
+      # SQLite's write-ahead log keeps an index in shared memory, in a file
+      # beside the database; a folder of a Windows host mounted into the
+      # container cannot share that memory. Exclusive locking keeps the
+      # index in the server instead. The database cannot then be opened by
+      # another program while the server runs: copy it with backup.ps1.
+      DB_EXCLUSIVE: ${DB_EXCLUSIVE:-1}
+    volumes:
+      - ./data:/data
+    secrets:
+      - lldjv_password
+      - share_password
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  lldjv_password:
+    file: ./secrets/lldjv_password.txt
+  share_password:
+    file: ./secrets/share_password.txt

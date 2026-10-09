@@ -2,42 +2,35 @@
 // Copyright Contributors to the DJV project.
 
 // The server's configuration: what it tells DJV about itself and the media
-// share, and the registry of the DJV clients allowed to use it.
+// share, and the people who may sign in.
 //
 // It is one JSON file, so that it can be read and edited by hand on the
 // server as easily as through the admin page, which writes the same file.
 // The sessions themselves are not here: they are in the database, and they
-// change with every note, where this changes when the admin says so.
+// change with every note, where this changes when the admin says so. Nor
+// are the secrets: the passwords are kept hashed, and the share's password
+// is read from a file of its own when the server starts (see server.js).
 
 import { readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-// A client identifier is chosen by whoever sets up a PC -- by default its
-// Windows computer name -- and goes into URLs, logs, and the admin page, so it
-// is kept to what is safe in all of them. DJV checks the same
-// (models::isValidSyncClientId()).
-const CLIENT_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+import { ROOT_USER, isPasswordHash, isValidUsername } from './users.js';
 
 const MAX_NAME = 200;
 const MAX_UNC = 1024;
 const MAX_VERSION = 64;
+const MAX_SHARE_USER = 256;
 
 export class ConfigError extends Error {}
-
-export function isValidClientId(id) {
-  return typeof id === 'string' && CLIENT_PATTERN.test(id) && id !== '.' && id !== '..';
-}
 
 function defaults() {
   return {
     name: 'DJV sync server',
-    storage: { unc: '' },
+    // The account DJV maps the share with. "djv" is the one the share setup
+    // script makes (see docs/lan/share-setup.md).
+    storage: { unc: '', user: 'djv' },
     djvVersion: '',
-    // Off unless asked for, so that a server started with no configuration
-    // behaves as it always did: anyone with the token can join.
-    requireRegistration: false,
-    adminToken: '',
-    clients: [],
+    users: [],
   };
 }
 
@@ -53,19 +46,46 @@ function checkText(value, what, max) {
 function checkUnc(value) {
   const unc = checkText(value, 'The storage share', MAX_UNC).replaceAll('/', '\\');
   if (unc && !/^\\\\[^\\]+\\[^\\]+/.test(unc)) {
-    throw new ConfigError('The storage share must be a UNC path, e.g. \\\\10.0.0.5\\media.');
+    throw new ConfigError('The storage share must be a UNC path, e.g. \\\\192.168.1.40\\media.');
   }
   return unc.replace(/\\+$/, '');
 }
 
-function checkClient(client) {
-  if (!client || typeof client !== 'object' || !isValidClientId(client.id)) {
-    throw new ConfigError('A client identifier can only have letters, digits, ".", "_" and "-", up to 64 of them.');
+// A Windows account, alone or with the machine or domain it belongs to:
+// "djv", or "192.168.1.40\djv".
+function checkShareUser(value) {
+  const user = checkText(value, 'The share user', MAX_SHARE_USER);
+  if (/["/[\]:;|=,+*?<>]/.test(user)) {
+    throw new ConfigError('The share user cannot have any of " / [ ] : ; | = , + * ? < >.');
   }
+  return user;
+}
+
+function checkUser(user) {
+  if (!user || typeof user !== 'object' || !isValidUsername(user.username)) {
+    throw new ConfigError('A user name can only have letters, digits, ".", "_" and "-", up to 64 of them.');
+  }
+  if (!isPasswordHash(user.passwordHash)) {
+    throw new ConfigError(`The user "${user.username}" has no password hash.`);
+  }
+  const now = new Date().toISOString();
   return {
-    id: client.id,
-    name: checkText(client.name ?? '', 'A client name', MAX_NAME),
-    added: typeof client.added === 'string' ? client.added : new Date().toISOString(),
+    username: user.username,
+    name: checkText(user.name ?? '', 'A user\'s name', MAX_NAME),
+    passwordHash: user.passwordHash,
+    created: typeof user.created === 'string' ? user.created : now,
+    updated: typeof user.updated === 'string' ? user.updated : now,
+  };
+}
+
+// What anyone but the user is shown of one: never the hash.
+function userView(user) {
+  return {
+    username: user.username,
+    name: user.name,
+    admin: user.username === ROOT_USER,
+    created: user.created,
+    updated: user.updated,
   };
 }
 
@@ -75,7 +95,7 @@ export class ServerConfig {
   constructor(file = null, initial = {}) {
     this.file = file;
     this.data = defaults();
-    this.apply(initial, { allowToken: true, allowClients: true });
+    this.apply(initial, { allowUsers: true });
   }
 
   static load(file) {
@@ -90,11 +110,12 @@ export class ServerConfig {
     return new ServerConfig(file, json);
   }
 
-  // Take the fields given, checked; the ones not given are left as they are.
-  // The admin token and the client list are only taken from the file: the
-  // admin page has its own requests for the clients, and does not set the
-  // token it is itself let in by.
-  apply(json, { allowToken = false, allowClients = false } = {}) {
+  // Take the fields given, checked; the ones not given are left as they are,
+  // and the ones not known -- the client registry and the admin token of
+  // the first LAN server among them -- are left out, and so dropped when the
+  // file is next written. The users are only taken from the file: the admin
+  // page has its own requests for them.
+  apply(json, { allowUsers = false } = {}) {
     if (!json || typeof json !== 'object' || Array.isArray(json)) {
       throw new ConfigError('The configuration must be a JSON object.');
     }
@@ -106,31 +127,27 @@ export class ServerConfig {
       if (!json.storage || typeof json.storage !== 'object') {
         throw new ConfigError('The storage must be an object with a "unc" path.');
       }
-      next.storage = { ...next.storage, unc: checkUnc(json.storage.unc ?? '') };
+      if (json.storage.unc !== undefined) {
+        next.storage.unc = checkUnc(json.storage.unc);
+      }
+      if (json.storage.user !== undefined) {
+        next.storage.user = checkShareUser(json.storage.user);
+      }
     }
     if (json.djvVersion !== undefined) {
       next.djvVersion = checkText(json.djvVersion, 'The DJV version', MAX_VERSION);
     }
-    if (json.requireRegistration !== undefined) {
-      if (typeof json.requireRegistration !== 'boolean') {
-        throw new ConfigError('"requireRegistration" must be true or false.');
-      }
-      next.requireRegistration = json.requireRegistration;
-    }
-    if (allowToken && json.adminToken !== undefined) {
-      next.adminToken = checkText(json.adminToken, 'The admin token', 1024);
-    }
-    if (allowClients && json.clients !== undefined) {
-      if (!Array.isArray(json.clients)) {
-        throw new ConfigError('"clients" must be a list.');
+    if (allowUsers && json.users !== undefined) {
+      if (!Array.isArray(json.users)) {
+        throw new ConfigError('"users" must be a list.');
       }
       const seen = new Set();
-      next.clients = [];
-      for (const item of json.clients) {
-        const client = checkClient(item);
-        if (!seen.has(client.id)) {
-          seen.add(client.id);
-          next.clients.push(client);
+      next.users = [];
+      for (const item of json.users) {
+        const user = checkUser(item);
+        if (!seen.has(user.username)) {
+          seen.add(user.username);
+          next.users.push(user);
         }
       }
     }
@@ -145,34 +162,35 @@ export class ServerConfig {
     return this.data.storage.unc;
   }
 
+  get shareUser() {
+    return this.data.storage.user;
+  }
+
   get djvVersion() {
     return this.data.djvVersion;
   }
 
-  get requireRegistration() {
-    return this.data.requireRegistration;
+  get users() {
+    return this.data.users.map(userView);
   }
 
-  get adminToken() {
-    return this.data.adminToken;
+  // The user with the hash, for checking a password; null when there is no
+  // such user.
+  user(username) {
+    return this.data.users.find((user) => user.username === username) ?? null;
   }
 
-  get clients() {
-    return this.data.clients;
+  userView(username) {
+    const user = this.user(username);
+    return user ? userView(user) : null;
   }
 
-  client(id) {
-    return this.data.clients.find((client) => client.id === id) ?? null;
-  }
-
-  // What the admin page is shown: everything but the token that lets it in.
+  // What the admin page is shown.
   view() {
     return {
       name: this.data.name,
       storage: { ...this.data.storage },
       djvVersion: this.data.djvVersion,
-      requireRegistration: this.data.requireRegistration,
-      adminTokenSet: this.data.adminToken !== '',
       file: this.file,
     };
   }
@@ -182,22 +200,33 @@ export class ServerConfig {
     this.save();
   }
 
-  setClient(id, name) {
-    const client = checkClient({ id, name, added: this.client(id)?.added });
-    const index = this.data.clients.findIndex((item) => item.id === id);
+  // Add a user or change one. The hash is made by the caller, which can take
+  // its time over it without holding up the configuration.
+  setUser(username, { name, passwordHash } = {}) {
+    const current = this.user(username);
+    if (!current && passwordHash === undefined) {
+      throw new ConfigError('A new user needs a password.');
+    }
+    const user = checkUser({
+      username,
+      name: name ?? current?.name ?? '',
+      passwordHash: passwordHash ?? current.passwordHash,
+      created: current?.created,
+    });
+    const index = this.data.users.findIndex((item) => item.username === username);
     if (index >= 0) {
-      this.data.clients[index] = client;
+      this.data.users[index] = user;
     } else {
-      this.data.clients.push(client);
+      this.data.users.push(user);
     }
     this.save();
-    return client;
+    return userView(user);
   }
 
-  removeClient(id) {
-    const before = this.data.clients.length;
-    this.data.clients = this.data.clients.filter((client) => client.id !== id);
-    if (this.data.clients.length !== before) {
+  removeUser(username) {
+    const before = this.data.users.length;
+    this.data.users = this.data.users.filter((user) => user.username !== username);
+    if (this.data.users.length !== before) {
       this.save();
       return true;
     }

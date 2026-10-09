@@ -20,3 +20,9 @@ dist/
 server/data/
 server/config.json
 server/node_modules/
+# A deployment's secrets, data and backups. The passwords must never be
+# committed. The packages built for one go in dist/, ignored above.
+server/deploy/secrets/
+server/deploy/data/
+server/deploy/backups/
+server/deploy/.env

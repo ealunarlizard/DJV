@@ -5,7 +5,8 @@
   The DJV sync server's admin page. Self-contained -- no fonts, scripts or
   styles from elsewhere -- since the studio network it runs on need not reach
   the internet. Everything it shows comes from the /api/admin requests, which
-  are where the admin token is checked.
+  only the administrator (lldjv) may use; signing in here is signing in as
+  that user, the same way DJV signs in.
 -->
 <html lang="en">
 <head>
@@ -29,7 +30,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 sys
 header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
 header h1 { margin: 0; font-size: 18px; }
 header .meta { color: var(--muted); }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: baseline; }
 main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+#content { display: grid; gap: 16px; }
 section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
 section h2 { margin: 0 0 12px; font-size: 15px; }
 .hint { color: var(--muted); font-size: 13px; margin: -6px 0 12px; }
@@ -37,14 +40,14 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
 td.empty { color: var(--muted); font-style: italic; }
+td.buttons { white-space: nowrap; text-align: right; }
 .table-wrap { overflow-x: auto; }
 input[type=text], input[type=password] { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--bad); }
 .form { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; align-items: center; }
-.form label.check { display: flex; gap: 8px; align-items: center; }
-.actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+.actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid currentColor; }
 .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
@@ -58,36 +61,31 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
   <h1 id="title">DJV Sync Admin</h1>
   <span class="meta" id="meta"></span>
   <span id="message"></span>
+  <span class="right"><span class="meta" id="who"></span><button id="sign-out" hidden>Sign out</button></span>
 </header>
 <main>
   <section id="login" hidden>
-    <h2>Admin token</h2>
-    <p class="hint">This server needs its admin token to be managed from here.</p>
+    <h2>Sign in</h2>
+    <p class="hint">As the administrator, <code>lldjv</code>. Its password is in the server's secrets folder.</p>
     <form id="login-form" class="form">
-      <label for="token">Token</label><input type="password" id="token" autocomplete="current-password">
+      <label for="username">User</label><input type="text" id="username" value="lldjv" autocomplete="username">
+      <label for="password">Password</label><input type="password" id="password" autocomplete="current-password">
     </form>
     <div class="actions"><button class="primary" form="login-form">Sign in</button></div>
   </section>
 
-  <div id="content" hidden style="display: grid; gap: 16px;">
+  <div id="content" hidden>
     <section>
-      <h2>Waiting for approval</h2>
-      <p class="hint">PCs that asked to join but are not registered. Approve one to let it in.</p>
+      <h2>Users</h2>
+      <p class="hint">The people who may sign in to DJV with this server. Give each one a name and a password; they type both into DJV's Sync Server settings once.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Client ID</th><th>Name</th><th>DJV</th><th>Address</th><th>Last seen</th><th></th></tr></thead>
-        <tbody id="waiting"></tbody>
-      </table></div>
-    </section>
-
-    <section>
-      <h2>Registered clients</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Client ID</th><th>Name</th><th>DJV</th><th>Address</th><th>Last seen</th><th>Connected</th><th></th></tr></thead>
-        <tbody id="clients"></tbody>
+        <thead><tr><th>User</th><th>Name</th><th>Last sign-in</th><th>PC</th><th>DJV</th><th>Connected</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
         <tfoot><tr>
-          <td><input type="text" id="new-id" placeholder="edit-bay-3"></td>
-          <td><input type="text" id="new-name" placeholder="Edit bay 3"></td>
-          <td colspan="5"><button id="add">Add client</button></td>
+          <td><input type="text" id="new-user" placeholder="anna" autocomplete="off"></td>
+          <td><input type="text" id="new-name" placeholder="Anna Ivanova" autocomplete="off"></td>
+          <td colspan="3"><input type="password" id="new-password" placeholder="Password (8 or more characters)" autocomplete="new-password"></td>
+          <td colspan="2" class="buttons"><button class="primary" id="add">Add user</button></td>
         </tr></tfoot>
       </table></div>
     </section>
@@ -95,7 +93,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
     <section>
       <h2>Connected now</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Client ID</th><th>Session</th><th>DJV</th><th>Address</th><th>Since</th></tr></thead>
+        <thead><tr><th>User</th><th>PC</th><th>Session</th><th>DJV</th><th>Address</th><th>Since</th></tr></thead>
         <tbody id="connected"></tbody>
       </table></div>
     </section>
@@ -112,18 +110,25 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
       <h2>Server settings</h2>
       <form id="settings" class="form">
         <label for="name">Server name</label><input type="text" id="name">
-        <label for="unc">Media share (UNC)</label><input type="text" id="unc" placeholder="\\10.0.0.5\media">
+        <label for="unc">Media share (UNC)</label><input type="text" id="unc" placeholder="\\192.168.1.40\media">
+        <label for="share-user">Share user</label><input type="text" id="share-user" placeholder="djv">
+        <span>Share password</span><span id="share-password"></span>
         <label for="djv-version">Expected DJV version</label><input type="text" id="djv-version" placeholder="3.7.5 (empty: not checked)">
-        <span></span><label class="check"><input type="checkbox" id="require"> Only let in registered clients</label>
       </form>
       <div class="actions"><button class="primary" form="settings">Save settings</button><span class="hint" id="config-file"></span></div>
+    </section>
+
+    <section>
+      <h2>Database</h2>
+      <p class="hint">A copy of every session, taken while the server runs. Open it with any SQLite tool; to restore it, stop the server and put it in place of <code>djv-sync.db</code> in the data folder.</p>
+      <div class="actions"><button id="backup">Download a backup</button></div>
     </section>
   </div>
 </main>
 <script>
 'use strict';
 let token = '';
-try { token = sessionStorage.getItem('djv-admin-token') ?? ''; } catch {}
+try { token = sessionStorage.getItem('djv-admin-session') ?? ''; } catch {}
 let config = null;
 
 const $ = (id) => document.getElementById(id);
@@ -135,15 +140,30 @@ function say(text, kind = '') {
   $('message').textContent = text;
 }
 
-async function api(method, path, body) {
+function setToken(value) {
+  token = value;
+  try {
+    if (token) sessionStorage.setItem('djv-admin-session', token);
+    else sessionStorage.removeItem('djv-admin-session');
+  } catch {}
+}
+
+async function request(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`/api/admin/${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const json = await res.json().catch(() => ({}));
-  if (res.status === 401 || (res.status === 403 && json.code === 'admin-token')) {
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status === 401 || (res.status === 403 && path.startsWith('/api/admin/'))) {
+    const json = await res.json().catch(() => ({}));
+    setToken('');
     showLogin();
-    throw new Error(json.error ?? 'The admin token is needed.');
+    throw new Error(json.error ?? 'Sign in first.');
   }
+  return res;
+}
+
+async function api(method, path, body) {
+  const res = await request(method, `/api/admin/${path}`, body);
+  const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
   return json;
 }
@@ -151,9 +171,12 @@ async function api(method, path, body) {
 function showLogin() {
   $('login').hidden = false;
   $('content').hidden = true;
+  $('sign-out').hidden = true;
+  $('who').textContent = '';
+  $('password').focus();
 }
 
-// A client running another DJV than the one expected is flagged: every PC
+// A user running another DJV than the one expected is flagged: every PC
 // should run the same one.
 function versionCell(version) {
   if (!version) return '';
@@ -168,24 +191,19 @@ function rows(target, items, render, empty, columns) {
 }
 
 async function refresh() {
-  const [clients, sessions] = await Promise.all([api('GET', 'clients'), api('GET', 'sessions')]);
-  rows('waiting', clients.waiting, (c) => `<tr>
-      <td><code>${esc(c.id)}</code></td>
-      <td><input type="text" data-name-for="${esc(c.id)}" placeholder="Name"></td>
-      <td>${versionCell(c.version)}</td><td>${esc(c.ip)}</td><td>${when(c.lastSeen)}</td>
-      <td><button class="primary" data-approve="${esc(c.id)}">Approve</button></td></tr>`,
-    'No one is waiting.', 6);
-  rows('clients', clients.registered, (c) => `<tr>
-      <td><code>${esc(c.id)}</code></td>
-      <td><input type="text" value="${esc(c.name)}" data-rename="${esc(c.id)}"></td>
-      <td>${versionCell(c.version)}</td><td>${esc(c.ip)}</td><td>${when(c.lastSeen)}</td>
-      <td>${c.connected ? `<span class="badge ok">${c.connected}</span>` : ''}</td>
-      <td><button class="danger" data-remove="${esc(c.id)}">Remove</button></td></tr>`,
-    'No clients are registered yet.', 7);
-  rows('connected', clients.connected, (c) => `<tr>
-      <td><code>${esc(c.client || '(unnamed)')}</code></td><td>${esc(c.session)}</td>
+  const [users, connected, sessions] = await Promise.all([api('GET', 'users'), api('GET', 'connected'), api('GET', 'sessions')]);
+  rows('users', users.users, (u) => `<tr>
+      <td><code>${esc(u.username)}</code>${u.admin ? ' <span class="badge">admin</span>' : ''}</td>
+      <td><input type="text" value="${esc(u.name)}" data-rename="${esc(u.username)}"></td>
+      <td>${when(u.lastSignIn)}</td><td>${esc(u.pc)}</td><td>${versionCell(u.version)}</td>
+      <td>${u.connected ? `<span class="badge ok">${u.connected}</span>` : ''}</td>
+      <td class="buttons">${u.admin ? '' : `<button data-password="${esc(u.username)}">New password</button>
+        <button class="danger" data-remove="${esc(u.username)}">Remove</button>`}</td></tr>`,
+    'No users yet.', 7);
+  rows('connected', connected.connected, (c) => `<tr>
+      <td><code>${esc(c.user)}</code></td><td>${esc(c.pc)}</td><td>${esc(c.session)}</td>
       <td>${versionCell(c.version)}</td><td>${esc(c.ip)}</td><td>${when(c.since)}</td></tr>`,
-    'No one is connected.', 5);
+    'No one is connected.', 6);
   rows('sessions', sessions.sessions, (s) => `<tr>
       <td><code>${esc(s.session)}</code></td><td>${esc(s.media ?? '')}</td>
       <td>${s.markers}</td><td>${s.rev}</td><td>${s.clients}</td></tr>`,
@@ -198,20 +216,29 @@ async function loadConfig() {
   document.title = `${config.name || 'DJV'} – Sync Admin`;
   $('name').value = config.name;
   $('unc').value = config.storage.unc;
+  $('share-user').value = config.storage.user;
   $('djv-version').value = config.djvVersion;
-  $('require').checked = config.requireRegistration;
+  $('share-password').innerHTML = config.sharePasswordSet ?
+    '<span class="badge ok">loaded</span> <span class="hint">from SHARE_PASSWORD_FILE</span>' :
+    '<span class="badge warn">not set</span> <span class="hint">DJV maps the share with the credentials Windows has</span>';
   $('config-file').textContent = config.file ? `Saved to ${config.file}` : 'Not saved to a file: the server runs without one.';
   $('meta').innerHTML = [
-    config.storage.unc ? `Share <code>${esc(config.storage.unc)}</code>` : '<span class="warn">No media share set</span>',
-    config.requireRegistration ? 'registered clients only' : '<span class="warn">any client may join</span>',
+    `server ${esc(config.serverVersion)}`,
+    config.storage.unc ? `share <code>${esc(config.storage.unc)}</code>` : '<span class="warn">no media share set</span>',
   ].join(' · ');
 }
 
 async function start() {
+  if (!token) {
+    showLogin();
+    return;
+  }
   try {
     await loadConfig();
     $('login').hidden = true;
     $('content').hidden = false;
+    $('sign-out').hidden = false;
+    $('who').textContent = 'Signed in as lldjv';
     await refresh();
     say('');
   } catch (error) {
@@ -219,11 +246,35 @@ async function start() {
   }
 }
 
-$('login-form').addEventListener('submit', (event) => {
+$('login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  token = $('token').value.trim();
-  try { sessionStorage.setItem('djv-admin-token', token); } catch {}
-  start();
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('username').value.trim(), password: $('password').value }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+    if (!json.user?.admin) {
+      // Signed in, but not as someone who may manage the server: let go of
+      // the sign-in again rather than keep it here.
+      await fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${json.token}` } });
+      throw new Error('Only the administrator (lldjv) can manage the server.');
+    }
+    $('password').value = '';
+    setToken(json.token);
+    await start();
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+});
+
+$('sign-out').addEventListener('click', async () => {
+  await request('POST', '/api/logout').catch(() => {});
+  setToken('');
+  showLogin();
+  say('Signed out.');
 });
 
 $('settings').addEventListener('submit', async (event) => {
@@ -231,9 +282,8 @@ $('settings').addEventListener('submit', async (event) => {
   try {
     await api('PUT', 'config', {
       name: $('name').value,
-      storage: { unc: $('unc').value },
+      storage: { unc: $('unc').value, user: $('share-user').value },
       djvVersion: $('djv-version').value,
-      requireRegistration: $('require').checked,
     });
     await loadConfig();
     await refresh();
@@ -244,28 +294,47 @@ $('settings').addEventListener('submit', async (event) => {
 });
 
 $('add').addEventListener('click', async () => {
+  const username = $('new-user').value.trim();
   try {
-    await api('PUT', `clients/${encodeURIComponent($('new-id').value.trim())}`, { name: $('new-name').value });
-    $('new-id').value = '';
+    await api('PUT', `users/${encodeURIComponent(username)}`, { name: $('new-name').value, password: $('new-password').value });
+    $('new-user').value = '';
     $('new-name').value = '';
+    $('new-password').value = '';
     await refresh();
-    say('Client added.', 'ok');
+    say(`${username} added.`, 'ok');
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+});
+
+$('backup').addEventListener('click', async () => {
+  try {
+    const res = await request('GET', '/api/admin/backup');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'djv-sync.db';
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await res.blob());
+    link.download = name;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    say(`Saved ${name}.`, 'ok');
   } catch (error) {
     say(error.message, 'bad');
   }
 });
 
 document.addEventListener('click', async (event) => {
-  const approve = event.target.dataset?.approve;
+  const reset = event.target.dataset?.password;
   const remove = event.target.dataset?.remove;
   try {
-    if (approve) {
-      const name = document.querySelector(`[data-name-for="${CSS.escape(approve)}"]`)?.value ?? '';
-      await api('PUT', `clients/${encodeURIComponent(approve)}`, { name });
-      say(`${approve} approved.`, 'ok');
+    if (reset) {
+      const password = prompt(`A new password for ${reset} (8 or more characters). Their DJVs are signed out, and sign in again with it.`);
+      if (!password) return;
+      await api('PUT', `users/${encodeURIComponent(reset)}`, { password });
+      say(`${reset} has a new password.`, 'ok');
     } else if (remove) {
-      if (!confirm(`Remove ${remove}? It will no longer be let in.`)) return;
-      await api('DELETE', `clients/${encodeURIComponent(remove)}`);
+      if (!confirm(`Remove ${remove}? They are signed out, and can no longer sign in.`)) return;
+      await api('DELETE', `users/${encodeURIComponent(remove)}`);
       say(`${remove} removed.`, 'ok');
     } else {
       return;
@@ -277,11 +346,11 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
-  const id = event.target.dataset?.rename;
-  if (!id) return;
+  const username = event.target.dataset?.rename;
+  if (!username) return;
   try {
-    await api('PUT', `clients/${encodeURIComponent(id)}`, { name: event.target.value });
-    say(`${id} renamed.`, 'ok');
+    await api('PUT', `users/${encodeURIComponent(username)}`, { name: event.target.value });
+    say(`${username} renamed.`, 'ok');
   } catch (error) {
     say(error.message, 'bad');
   }

@@ -1,16 +1,10 @@
 {
-  "_comment": "Copy to config.json beside server.js (or point CONFIG_FILE at it). The admin page at /admin edits the same file. Keys starting with _ are ignored.",
+  "_comment": "Copy to config.json beside server.js (or point CONFIG_FILE at it). The admin page at /admin edits the same file, and adds the users. Keys starting with _ are ignored. The server writes this file itself, so a hand edit is best made while it is stopped.",
   "name": "Dev review server",
-  "_storage": "The read-only share that holds the review media. DJV maps it to the drive letter set on each PC.",
-  "storage": { "unc": "\\\\10.0.0.5\\media" },
+  "_storage": "The read-only share that holds the review media, and the Windows account DJV maps it with. The account's password is not here: it is read from SHARE_PASSWORD_FILE.",
+  "storage": { "unc": "\\\\192.168.1.40\\media", "user": "djv" },
   "_djvVersion": "The DJV version every PC should run. A PC running another version is warned. Empty to not check.",
   "djvVersion": "3.7.5",
-  "_requireRegistration": "Only let in the clients listed below. Others are refused and show on the admin page, waiting for approval.",
-  "requireRegistration": true,
-  "_adminToken": "Needed to use the admin page from another machine. Without one, the admin page only works on the server itself. ADMIN_TOKEN in the environment overrides it.",
-  "adminToken": "",
-  "clients": [
-    { "id": "edit-bay-1", "name": "Edit bay 1" },
-    { "id": "grading-suite", "name": "Grading suite" }
-  ]
+  "_users": "Added on the admin page, with their passwords hashed. The administrator, lldjv, is made from ROOT_PASSWORD_FILE when the server starts.",
+  "users": []
 }

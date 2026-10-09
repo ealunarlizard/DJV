@@ -20,30 +20,46 @@
 // kept too, so that a client that was away while the server restarted can
 // still catch up rather than read everything again.
 //
-// On a studio network the server is also where DJV learns its place: each
-// DJV says which PC it is, the server lets in the ones the admin registered
-// (see config.js and the admin page), and tells them where the media share
-// is, which DJV maps to a drive.
+// On a studio network the server is also where DJV learns its place: the
+// people who review sign in with the name and password the admin gave them
+// (see users.js and the admin page), and the server tells their DJV where
+// the media share is and how to sign in to it, so that DJV can map it to a
+// drive.
 //
 // Nothing but Node: a server for a handful of people reviewing together
 // should start with "node server.js". Node has SQLite built in from 22.13.
 // See README.md for the protocol.
 
 import { createServer as createHttpServer } from 'node:http';
-import { mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs';
-import { timingSafeEqual } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import { ConfigError, ServerConfig, isValidClientId } from './config.js';
+import { ConfigError, ServerConfig } from './config.js';
+import {
+  ROOT_USER, hashPassword, hashPasswordSync, isValidUsername, newToken,
+  passwordProblem, tokenHash, verifyPassword, verifyPasswordSync,
+} from './users.js';
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_VERSION = JSON.parse(readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8')).version;
 
-// How many unregistered clients the admin page is shown, the most recent
-// first. A PC that asks once and goes away should not grow the list forever.
-const MAX_WAITING = 100;
+// How long a session token lasts without being used. Each use pushes it on,
+// so a DJV used every day stays signed in, and one left for a month signs
+// in again with the password it keeps.
+const TOKEN_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// How often the use of a token is written down, at most: every request would
+// be a write for nothing.
+const TOKEN_TOUCH_MS = 60 * 60 * 1000;
+
+// Signing in is refused for a while after this many failures from one
+// address, so that passwords cannot be guessed at the speed of the network.
+const LOGIN_FAILURES = 10;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 
 // A session name goes into a URL, so it is kept to what is safe there and in
 // a file name, which is where sessions were kept before the database. DJV
@@ -67,7 +83,8 @@ const HEARTBEAT_MS = 15000;
 
 // The layout of the database, numbered so that a later server can tell an
 // older file and bring it up to date.
-const SCHEMA_VERSION = 1;
+// Version 2 adds the session tokens.
+const SCHEMA_VERSION = 2;
 
 class HttpError extends Error {
   // What else the client is told, beside the message: a code it can act
@@ -79,9 +96,10 @@ class HttpError extends Error {
   }
 }
 
-// Who is asking: the PC, as DJV was told to call it, and its DJV version.
-// Both come in headers so that every request carries them, the event stream
-// included.
+// Which PC is asking, as DJV calls it, and with which DJV. Both come in
+// headers, so that every request carries them, the event stream included.
+// They say nothing about who may do what -- the user's token does that --
+// and are shown on the admin page.
 function identify(req) {
   const header = (name) => {
     const value = req.headers[name];
@@ -92,10 +110,6 @@ function identify(req) {
     version: header('x-djv-version').slice(0, 64),
     ip: req.socket.remoteAddress ?? '',
   };
-}
-
-function isLoopback(address) {
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 function isValidSession(name) {
@@ -128,12 +142,21 @@ function checkMedia(media) {
 // revision, the marker or media it changed, and the change itself for the
 // clients catching up, all written together or not at all.
 class Store {
-  constructor(file) {
+  constructor(file, { exclusive = false } = {}) {
     this.db = new DatabaseSync(file);
     // Write-ahead logging lets the snapshot a client reads not wait on a
     // change being written, and a commit costs one write rather than two.
     // With it, NORMAL is still safe against the server crashing; only the
     // machine losing power could lose the very last changes.
+    //
+    // Exclusive locking is for a file system that cannot share memory
+    // between processes, such as a folder of the host mounted into a
+    // container: WAL then keeps its index in the server's own memory
+    // rather than in a "-shm" file beside the database. Only this server
+    // can open the file while it runs; copies are made with backup().
+    if (exclusive) {
+      this.db.exec('PRAGMA locking_mode = EXCLUSIVE;');
+    }
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -163,6 +186,14 @@ class Store {
         data    TEXT NOT NULL,
         PRIMARY KEY (session, rev)
       );
+      CREATE TABLE IF NOT EXISTS tokens (
+        hash     TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        client   TEXT NOT NULL,
+        created  TEXT NOT NULL,
+        used     TEXT NOT NULL,
+        expires  TEXT NOT NULL
+      );
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
     const db = this.db;
@@ -187,7 +218,49 @@ class Store {
       removeDeleted: db.prepare('DELETE FROM deleted WHERE session = ? AND id = ?'),
       putEvent: db.prepare('INSERT INTO events (session, rev, data) VALUES (?, ?, ?)'),
       trimEvents: db.prepare('DELETE FROM events WHERE session = ? AND rev <= ?'),
+      putToken: db.prepare('INSERT INTO tokens (hash, username, client, created, used, expires) VALUES (?, ?, ?, ?, ?, ?)'),
+      token: db.prepare('SELECT username, client, used, expires FROM tokens WHERE hash = ?'),
+      touchToken: db.prepare('UPDATE tokens SET used = ?, expires = ? WHERE hash = ?'),
+      removeToken: db.prepare('DELETE FROM tokens WHERE hash = ?'),
+      removeUserTokens: db.prepare('DELETE FROM tokens WHERE username = ?'),
+      removeExpiredTokens: db.prepare('DELETE FROM tokens WHERE expires < ?'),
+      lastSignIn: db.prepare('SELECT username, MAX(created) AS created FROM tokens GROUP BY username'),
     };
+  }
+
+  addToken(hash, username, client, expires) {
+    const now = new Date().toISOString();
+    this.statements.putToken.run(hash, username, client, now, now, expires);
+  }
+
+  token(hash) {
+    return this.statements.token.get(hash) ?? null;
+  }
+
+  touchToken(hash, used, expires) {
+    this.statements.touchToken.run(used, expires, hash);
+  }
+
+  removeToken(hash) {
+    this.statements.removeToken.run(hash);
+  }
+
+  removeUserTokens(username) {
+    this.statements.removeUserTokens.run(username);
+  }
+
+  removeExpiredTokens(now) {
+    this.statements.removeExpiredTokens.run(now);
+  }
+
+  // When each user last signed in, of the sign-ins still valid.
+  lastSignIns() {
+    return new Map(this.statements.lastSignIn.all().map((row) => [row.username, row.created]));
+  }
+
+  // A consistent copy of the whole database, made while it is in use.
+  backup(file) {
+    this.db.prepare('VACUUM INTO ?').run(file);
   }
 
   // Run the function as one transaction, undone if it throws.
@@ -375,12 +448,6 @@ async function readJson(req) {
   }
 }
 
-function tokenMatches(given, expected) {
-  const a = Buffer.from(given ?? '');
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 // Bring the sessions an earlier server kept as JSON files into the database,
 // once: each file is renamed when it is in, so it is not read again, and is
 // left beside the database in case it is wanted back.
@@ -424,116 +491,279 @@ function importJsonSessions(store, dataDir, log) {
   }
 }
 
+// Make sure the administrator is there, with the password from the server's
+// file: that file is where the password is set, so that whoever runs the
+// server can always get back in, and changing it there and restarting is
+// how it is changed. Tells whether it was changed.
+function ensureRoot(config, rootPassword, log) {
+  if (!rootPassword) {
+    if (!config.user(ROOT_USER)) {
+      throw new ConfigError(`There is no "${ROOT_USER}" user, and no password to make one with: set ROOT_PASSWORD_FILE (or ROOT_PASSWORD).`);
+    }
+    return false;
+  }
+  const problem = passwordProblem(rootPassword);
+  if (problem) {
+    throw new ConfigError(`The "${ROOT_USER}" password: ${problem}`);
+  }
+  const current = config.user(ROOT_USER);
+  if (current && verifyPasswordSync(rootPassword, current.passwordHash)) {
+    return false;
+  }
+  config.setUser(ROOT_USER, {
+    name: current?.name || 'Administrator',
+    passwordHash: hashPasswordSync(rootPassword),
+  });
+  log(current ? `The "${ROOT_USER}" password was changed` : `Made the "${ROOT_USER}" user`);
+  return true;
+}
+
+function isoTime(ms) {
+  return new Date(ms).toISOString();
+}
+
 export function createSyncServer(options = {}) {
   const dataDir = options.dataDir ?? path.join(process.cwd(), 'data');
   const dbFile = options.dbFile ?? path.join(dataDir, 'djv-sync.db');
-  const token = options.token ?? '';
   const log = options.log ?? (() => {});
   // The configuration as given, or read from its file, or none at all.
   const config = options.config ??
     (options.configFile ? ServerConfig.load(options.configFile) : new ServerConfig());
-  // The admin token from the environment wins over the file's, so that it
-  // can be kept out of a file the admin page writes.
-  const adminToken = () => options.adminToken || config.adminToken;
+  // The password of the share's account, which signed-in DJVs map the
+  // share with. It is only held here, never written to the configuration.
+  const sharePassword = options.sharePassword ?? '';
+  const rootChanged = ensureRoot(config, options.rootPassword ?? '', log);
 
   mkdirSync(path.dirname(dbFile), { recursive: true });
-  const store = new Store(dbFile);
+  const store = new Store(dbFile, { exclusive: options.exclusive ?? false });
   importJsonSessions(store, dataDir, log);
+  if (rootChanged) {
+    store.removeUserTokens(ROOT_USER);
+  }
+  store.removeExpiredTokens(isoTime(Date.now()));
 
-  // The clients the server has heard from, by identifier: when, from where,
-  // and with which DJV, for the admin page. Those not registered are the ones
-  // waiting to be let in. Neither is kept across a restart: a PC that is
-  // still there asks again.
+  // Checked against when the user name is not known, so that a wrong name
+  // takes as long as a wrong password and does not tell which names exist.
+  const nobodyHash = hashPasswordSync(newToken());
+
+  // Who has been heard from, by user: from which PC, where, and with which
+  // DJV, for the admin page. Not kept across a restart.
   const seen = new Map();
-  const waiting = new Map();
   // The event streams open now, with who opened them, for the admin page.
   const streams = new Map();
+  // The failed sign-ins, by address.
+  const loginFailures = new Map();
 
-  function noteClient(identity) {
-    if (!identity.id) {
+  function noteUser(user, identity) {
+    seen.set(user.username, {
+      pc: identity.id,
+      ip: identity.ip,
+      version: identity.version,
+      lastSeen: new Date().toISOString(),
+    });
+  }
+
+  function checkLoginAllowed(ip) {
+    const entry = loginFailures.get(ip);
+    if (!entry) {
       return;
     }
-    const entry = { id: identity.id, ip: identity.ip, version: identity.version, lastSeen: new Date().toISOString() };
-    seen.set(identity.id, entry);
-    if (!config.client(identity.id) && isValidClientId(identity.id)) {
-      waiting.delete(identity.id);
-      waiting.set(identity.id, entry);
-      while (waiting.size > MAX_WAITING) {
-        waiting.delete(waiting.keys().next().value);
-      }
+    if (Date.now() - entry.first > LOGIN_WINDOW_MS) {
+      loginFailures.delete(ip);
+      return;
+    }
+    if (entry.count >= LOGIN_FAILURES) {
+      throw new HttpError(429, 'Too many failed sign-ins from this address; wait a few minutes.', { code: 'login-throttled' });
     }
   }
 
-  // With registration required, only the PCs the admin let in may use the
-  // sessions. The refusal says which PC was refused, so that DJV can tell
-  // its user what to ask the admin for.
-  function checkClient(identity) {
-    if (!config.requireRegistration || config.client(identity.id)) {
-      return;
+  function noteLoginFailure(ip) {
+    const entry = loginFailures.get(ip);
+    if (entry && Date.now() - entry.first <= LOGIN_WINDOW_MS) {
+      entry.count += 1;
+    } else {
+      loginFailures.set(ip, { count: 1, first: Date.now() });
     }
-    const message = identity.id ?
-      `The client "${identity.id}" is not registered on this server; ask the admin to approve it.` :
-      'This server only lets in registered clients, and the request did not say which client it is.';
-    throw new HttpError(403, message, { code: 'unregistered', client: identity.id });
   }
 
-  // The admin requests: with an admin token, whoever has it; without one,
-  // only from the server itself.
-  function checkAdmin(req) {
-    const expected = adminToken();
-    if (!expected) {
-      if (!isLoopback(req.socket.remoteAddress)) {
-        throw new HttpError(403, 'Without an admin token the server can only be managed from the server itself; set ADMIN_TOKEN.');
-      }
-      return;
-    }
+  function bearer(req) {
     const header = req.headers.authorization ?? '';
-    if (!header.startsWith('Bearer ')) {
-      throw new HttpError(401, 'The admin token is needed.', { code: 'admin-token' });
+    return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  }
+
+  // The user the request's session token belongs to, or null.
+  function authenticate(req) {
+    const token = bearer(req);
+    if (!token) {
+      return null;
     }
-    if (!tokenMatches(header.slice(7), expected)) {
-      throw new HttpError(403, 'The admin token is not right.', { code: 'admin-token' });
+    const hash = tokenHash(token);
+    const row = store.token(hash);
+    if (!row) {
+      return null;
+    }
+    const now = Date.now();
+    if (Date.parse(row.expires) < now) {
+      store.removeToken(hash);
+      return null;
+    }
+    const user = config.userView(row.username);
+    if (!user) {
+      store.removeUserTokens(row.username);
+      return null;
+    }
+    if (now - Date.parse(row.used) > TOKEN_TOUCH_MS) {
+      store.touchToken(hash, isoTime(now), isoTime(now + TOKEN_DAYS * DAY_MS));
+    }
+    return { ...user, tokenHash: hash };
+  }
+
+  function requireUser(user) {
+    if (!user) {
+      throw new HttpError(401, 'Sign in first: the request has no session token, or one that has expired.', { code: 'signed-out' });
+    }
+    return user;
+  }
+
+  function requireAdmin(user) {
+    requireUser(user);
+    if (!user.admin) {
+      throw new HttpError(403, `Only the administrator (${ROOT_USER}) can do this.`, { code: 'not-admin' });
     }
   }
 
-  // The token in force may be the environment's rather than the file's.
+  // Sign a user out everywhere: their tokens go, and their streams are
+  // closed, so that their DJVs find out at once rather than at the next
+  // change they send.
+  function signOutEverywhere(username) {
+    store.removeUserTokens(username);
+    for (const [res, stream] of streams) {
+      if (stream.user === username) {
+        res.end();
+      }
+    }
+  }
+
+  async function login(req, res, identity) {
+    checkLoginAllowed(identity.ip);
+    const body = await readJson(req);
+    const username = typeof body?.username === 'string' ? body.username.trim() : '';
+    const password = typeof body?.password === 'string' ? body.password : '';
+    const user = isValidUsername(username) ? config.user(username) : null;
+    const ok = await verifyPassword(password, user?.passwordHash ?? nobodyHash);
+    if (!user || !ok) {
+      noteLoginFailure(identity.ip);
+      log(`Failed sign-in as "${username.slice(0, 64)}" from ${identity.id || '?'} (${identity.ip})`);
+      throw new HttpError(401, 'The user name or the password is not right.', { code: 'login-failed' });
+    }
+    loginFailures.delete(identity.ip);
+    const token = newToken();
+    const now = Date.now();
+    const expires = isoTime(now + TOKEN_DAYS * DAY_MS);
+    store.removeExpiredTokens(isoTime(now));
+    store.addToken(tokenHash(token), username, identity.id, expires);
+    const view = config.userView(username);
+    noteUser(view, identity);
+    log(`${username} signed in from ${identity.id || '?'} (${identity.ip})`);
+    sendJson(res, 200, { token, expires, user: view });
+  }
+
   function configView() {
-    return { ...config.view(), adminTokenSet: adminToken() !== '' };
+    return {
+      ...config.view(),
+      serverVersion: SERVER_VERSION,
+      sharePasswordSet: sharePassword !== '',
+    };
   }
 
-  function hello(identity) {
-    const client = config.client(identity.id);
-    return {
+  // What a DJV is told about the server. Where the media is, and how to
+  // sign in to it, only once its user has signed in.
+  function hello(user) {
+    const out = {
       name: config.name,
       serverVersion: SERVER_VERSION,
       djvVersion: config.djvVersion,
-      requireRegistration: config.requireRegistration,
-      storage: { unc: config.unc },
-      client: {
-        id: identity.id,
-        name: client?.name ?? '',
-        registered: client !== null,
-      },
+      authRequired: true,
+      signedIn: user !== null,
     };
+    if (user) {
+      out.user = { username: user.username, name: user.name, admin: user.admin };
+      out.storage = { unc: config.unc, user: config.shareUser, password: sharePassword };
+    }
+    return out;
   }
 
-  function adminClients() {
+  function adminUsers() {
+    const signIns = store.lastSignIns();
     const connected = [...streams.values()];
     return {
-      registered: config.clients.map((client) => ({
-        ...client,
-        ip: seen.get(client.id)?.ip ?? '',
-        version: seen.get(client.id)?.version ?? '',
-        lastSeen: seen.get(client.id)?.lastSeen ?? '',
-        connected: connected.filter((stream) => stream.client === client.id).length,
-      })),
-      waiting: [...waiting.values()].reverse(),
-      connected,
+      users: config.users.map((user) => {
+        const last = seen.get(user.username);
+        return {
+          ...user,
+          lastSignIn: signIns.get(user.username) ?? '',
+          lastSeen: last?.lastSeen ?? '',
+          pc: last?.pc ?? '',
+          ip: last?.ip ?? '',
+          version: last?.version ?? '',
+          connected: connected.filter((stream) => stream.user === user.username).length,
+        };
+      }),
     };
   }
 
-  async function handleAdmin(req, res, url, parts) {
-    checkAdmin(req);
+  async function setUser(req, res, username) {
+    const body = await readJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'The request must be a JSON object.');
+    }
+    const change = {};
+    if (body.name !== undefined) {
+      if (typeof body.name !== 'string') {
+        throw new HttpError(400, 'The name must be text.');
+      }
+      change.name = body.name;
+    }
+    if (body.password !== undefined && body.password !== '') {
+      if (username === ROOT_USER) {
+        throw new HttpError(400, `The "${ROOT_USER}" password is set in its file on the server (ROOT_PASSWORD_FILE), and the server restarted.`);
+      }
+      const problem = passwordProblem(body.password);
+      if (problem) {
+        throw new HttpError(400, problem);
+      }
+      change.passwordHash = await hashPassword(body.password);
+    }
+    const isNew = config.user(username) === null;
+    const user = config.setUser(username, change);
+    if (change.passwordHash && !isNew) {
+      // A new password is often because the old one got out.
+      signOutEverywhere(username);
+    }
+    log(isNew ? `User "${username}" added` : `User "${username}" changed${change.passwordHash ? ', with a new password' : ''}`);
+    sendJson(res, 200, user);
+  }
+
+  function backup(res) {
+    const file = path.join(tmpdir(), `djv-sync-backup-${process.pid}-${Date.now()}.db`);
+    try {
+      store.backup(file);
+      const data = readFileSync(file);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.sqlite3',
+        'Content-Length': data.length,
+        'Content-Disposition': `attachment; filename="djv-sync-${stamp}.db"`,
+        'Cache-Control': 'no-store',
+      });
+      res.end(data);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  }
+
+  async function handleAdmin(req, res, url, parts, user) {
+    requireAdmin(user);
     if (parts.length === 3 && parts[2] === 'config') {
       if (req.method === 'GET') {
         sendJson(res, 200, configView());
@@ -541,37 +771,47 @@ export function createSyncServer(options = {}) {
       }
       if (req.method === 'PUT') {
         config.update(await readJson(req));
-        log(`Configuration changed from ${req.socket.remoteAddress}`);
+        log(`Configuration changed by ${user.username}`);
         sendJson(res, 200, configView());
         return;
       }
     }
-    if (parts.length === 3 && parts[2] === 'clients' && req.method === 'GET') {
-      sendJson(res, 200, adminClients());
-      return;
+    if (parts.length === 3 && req.method === 'GET') {
+      if (parts[2] === 'users') {
+        sendJson(res, 200, adminUsers());
+        return;
+      }
+      if (parts[2] === 'connected') {
+        sendJson(res, 200, { connected: [...streams.values()] });
+        return;
+      }
+      if (parts[2] === 'sessions') {
+        sendJson(res, 200, { sessions: listSessions() });
+        return;
+      }
+      if (parts[2] === 'backup') {
+        backup(res);
+        return;
+      }
     }
-    if (parts.length === 3 && parts[2] === 'sessions' && req.method === 'GET') {
-      sendJson(res, 200, { sessions: listSessions() });
-      return;
-    }
-    if (parts.length === 4 && parts[2] === 'clients') {
-      const id = parts[3];
-      if (!isValidClientId(id)) {
-        throw new HttpError(400, 'A client identifier can only have letters, digits, ".", "_" and "-", up to 64 of them.');
+    if (parts.length === 4 && parts[2] === 'users') {
+      const username = parts[3];
+      if (!isValidUsername(username)) {
+        throw new HttpError(400, 'A user name can only have letters, digits, ".", "_" and "-", up to 64 of them.');
       }
       if (req.method === 'PUT') {
-        const body = await readJson(req);
-        const client = config.setClient(id, typeof body?.name === 'string' ? body.name : '');
-        waiting.delete(id);
-        log(`Client "${id}" registered`);
-        sendJson(res, 200, client);
+        await setUser(req, res, username);
         return;
       }
       if (req.method === 'DELETE') {
-        if (!config.removeClient(id)) {
-          throw new HttpError(404, `There is no client "${id}".`);
+        if (username === ROOT_USER) {
+          throw new HttpError(400, `The "${ROOT_USER}" user cannot be removed.`);
         }
-        log(`Client "${id}" removed`);
+        if (!config.removeUser(username)) {
+          throw new HttpError(404, `There is no user "${username}".`);
+        }
+        signOutEverywhere(username);
+        log(`User "${username}" removed`);
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -596,20 +836,6 @@ export function createSyncServer(options = {}) {
     return session;
   }
 
-  function checkToken(req, url) {
-    if (!token) {
-      return;
-    }
-    const header = req.headers.authorization ?? '';
-    const given = header.startsWith('Bearer ') ? header.slice(7) : url.searchParams.get('token');
-    if (!given) {
-      throw new HttpError(401, 'A token is needed.');
-    }
-    if (!tokenMatches(given, token)) {
-      throw new HttpError(403, 'The token is not right.');
-    }
-  }
-
   function listSessions() {
     const names = new Set([...sessions.keys(), ...store.names()]);
     return [...names].filter(isValidSession).sort().map((name) => {
@@ -624,7 +850,7 @@ export function createSyncServer(options = {}) {
     });
   }
 
-  function openStream(req, res, session, since, identity) {
+  function openStream(req, res, session, since, user, identity) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -645,7 +871,8 @@ export function createSyncServer(options = {}) {
     }
     session.clients.add(res);
     streams.set(res, {
-      client: identity.id,
+      user: user.username,
+      pc: identity.id,
       session: session.name,
       ip: identity.ip,
       version: identity.version,
@@ -665,7 +892,7 @@ export function createSyncServer(options = {}) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-DJV-Client, X-DJV-Version');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -675,7 +902,7 @@ export function createSyncServer(options = {}) {
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (parts[0] === 'admin' && parts.length === 1 && req.method === 'GET') {
       // The page holds nothing of the server's: what it shows, it asks the
-      // admin requests for, which are where the token is checked.
+      // admin requests for, which are where the user is checked.
       const html = readFileSync(path.join(SERVER_DIR, 'admin.html'));
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -692,21 +919,35 @@ export function createSyncServer(options = {}) {
       sendJson(res, 200, { ok: true });
       return;
     }
-    if (parts[1] === 'admin') {
-      await handleAdmin(req, res, url, parts);
-      return;
-    }
-    checkToken(req, url);
-
-    // Who is asking is noted before anything is refused, so that a PC the
-    // admin has not let in yet shows on the admin page, ready to approve.
     const identity = identify(req);
-    noteClient(identity);
-    if (parts.length === 2 && parts[1] === 'hello' && req.method === 'GET') {
-      sendJson(res, 200, hello(identity));
+    if (parts.length === 2 && parts[1] === 'login' && req.method === 'POST') {
+      await login(req, res, identity);
       return;
     }
-    checkClient(identity);
+    const user = authenticate(req);
+    if (user) {
+      noteUser(user, identity);
+    }
+    // Hello answers anyone, so that DJV can tell a server that wants it to
+    // sign in from one it cannot reach; what it says depends on whether it
+    // has.
+    if (parts.length === 2 && parts[1] === 'hello' && req.method === 'GET') {
+      sendJson(res, 200, hello(user));
+      return;
+    }
+    if (parts.length === 2 && parts[1] === 'logout' && req.method === 'POST') {
+      if (user) {
+        store.removeToken(user.tokenHash);
+        log(`${user.username} signed out from ${identity.id || '?'} (${identity.ip})`);
+      }
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (parts[1] === 'admin') {
+      await handleAdmin(req, res, url, parts, user);
+      return;
+    }
+    requireUser(user);
 
     if (parts.length === 2 && parts[1] === 'sessions' && req.method === 'GET') {
       sendJson(res, 200, { sessions: listSessions() });
@@ -724,7 +965,7 @@ export function createSyncServer(options = {}) {
 
     if (parts.length === 4 && parts[3] === 'events' && req.method === 'GET') {
       const since = Number.parseInt(url.searchParams.get('since') ?? '0', 10);
-      openStream(req, res, session, Number.isFinite(since) ? since : 0, identity);
+      openStream(req, res, session, Number.isFinite(since) ? since : 0, user, identity);
       return;
     }
 
@@ -734,7 +975,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'media',
           clientId: typeof body?.clientId === 'string' ? body.clientId : '',
-          client: identity.id,
+          user: user.username,
           media: checkMedia(body?.media),
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -744,7 +985,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'media',
           clientId: url.searchParams.get('clientId') ?? '',
-          client: identity.id,
+          user: user.username,
           media: null,
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -769,7 +1010,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'upsert',
           clientId: typeof body.clientId === 'string' ? body.clientId : '',
-          client: identity.id,
+          user: user.username,
           marker: { ...marker, id },
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -781,7 +1022,7 @@ export function createSyncServer(options = {}) {
         const event = session.apply({
           type: 'delete',
           clientId: url.searchParams.get('clientId') ?? '',
-          client: identity.id,
+          user: user.username,
           id,
         }, store);
         sendJson(res, 200, { rev: event.rev });
@@ -833,34 +1074,54 @@ export function createSyncServer(options = {}) {
   return server;
 }
 
+// A secret, from the file NAME_FILE names -- a Docker secret, say -- or from
+// NAME itself. A file written on Windows may start with a byte order mark
+// and end with a line break, neither of which is part of the password.
+function secret(name, log) {
+  const file = process.env[`${name}_FILE`];
+  if (file) {
+    try {
+      return readFileSync(file, 'utf8').replace(/^﻿/, '').replace(/[\r\n]+$/, '');
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw new ConfigError(`Cannot read ${name}_FILE (${file}): ${error.message}`);
+      }
+      log(`${name}_FILE (${file}) is not there`);
+      return '';
+    }
+  }
+  return process.env[name] ?? '';
+}
+
 function main() {
-  const port = Number.parseInt(process.env.PORT ?? '8787', 10);
-  // This machine only, unless asked: there are no accounts, and a token is
-  // the only lock there is.
+  const port = Number.parseInt(process.env.PORT ?? '8877', 10);
+  // This machine only, unless asked: in a container, HOST is 0.0.0.0 and
+  // the port is published to the network instead.
   const host = process.env.HOST ?? '127.0.0.1';
   const dataDir = process.env.DATA_DIR ?? path.join(SERVER_DIR, 'data');
   const dbFile = process.env.DB_FILE || undefined;
   const configFile = process.env.CONFIG_FILE || path.join(SERVER_DIR, 'config.json');
-  const token = process.env.DJV_SYNC_TOKEN ?? '';
-  const adminToken = process.env.ADMIN_TOKEN ?? '';
+  const exclusive = ['1', 'true', 'yes'].includes((process.env.DB_EXCLUSIVE ?? '').toLowerCase());
   const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
   let server;
+  let sharePassword;
   try {
-    server = createSyncServer({ dataDir, dbFile, configFile, token, adminToken, log });
+    const rootPassword = secret('ROOT_PASSWORD', log);
+    sharePassword = secret('SHARE_PASSWORD', log);
+    server = createSyncServer({ dataDir, dbFile, configFile, rootPassword, sharePassword, exclusive, log });
   } catch (error) {
     // A configuration that cannot be read stops the server rather than
-    // start it with none: it would let in every PC the admin had not.
+    // start it with none: it would have no users, and no administrator.
     console.error(error.message);
     process.exit(1);
   }
   server.listen(port, host, () => {
-    log(`DJV sync server ${SERVER_VERSION} on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${token ? ', token required' : ''}`);
-    log(`Configuration in ${configFile}; admin page at http://${host}:${port}/admin`);
-    if (host !== '127.0.0.1' && host !== 'localhost' && !token && !server.config.requireRegistration) {
-      log('Warning: listening beyond this machine with neither a token nor registration; set DJV_SYNC_TOKEN or "requireRegistration".');
-    }
+    log(`DJV sync server ${SERVER_VERSION} on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${exclusive ? ' (exclusive)' : ''}`);
+    log(`Configuration in ${configFile}; admin page at http://${host}:${port}/admin, as "${ROOT_USER}"`);
     if (!server.config.unc) {
       log('No storage share is set; DJV clients will not map a drive. Set it on the admin page.');
+    } else if (!sharePassword) {
+      log('No share password (SHARE_PASSWORD_FILE): DJV clients will map the share with the credentials Windows has for it.');
     }
   });
   const stop = () => {

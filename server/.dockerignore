@@ -1,0 +1,8 @@
+# Only what the image needs: the server's own files, never its data or the
+# secrets of a deployment made from this folder.
+*
+!package.json
+!server.js
+!config.js
+!users.js
+!admin.html
