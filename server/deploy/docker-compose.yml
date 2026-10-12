@@ -9,6 +9,11 @@
 # The passwords are in ./secrets, made by new-secrets.ps1, and reach the
 # container as Docker secrets: they are in neither the image nor its
 # environment.
+#
+# DJV_MEDIA_DIR (in .env) is the folder of review media that the host shares
+# as the media share: share-setup.ps1 sets it. The server can write to it, so
+# that the portal can upload videos there; the share itself stays read-only
+# for the account DJV maps it with. Only the server writes.
 
 name: djv-sync
 
@@ -29,6 +34,11 @@ services:
       DB_EXCLUSIVE: ${DB_EXCLUSIVE:-1}
     volumes:
       - ./data:/data
+      # The long form, so that a media folder that is not there stops the
+      # start rather than being made, empty, in the wrong place.
+      - type: bind
+        source: ${DJV_MEDIA_DIR:-./media}
+        target: /media
     secrets:
       - lldjv_password
       - share_password

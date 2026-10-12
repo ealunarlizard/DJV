@@ -16,6 +16,9 @@ Run as an administrator on the server that holds the media. It:
      access, so that media can still be added from the server itself.
   4. Opens the Windows firewall for file sharing and for the sync server's
      port, on private and domain networks.
+  5. Sets DJV_MEDIA_DIR in .env to the folder, so that the sync server's
+     portal uploads videos into it. The server writes to the folder
+     itself, from its container; the share stays read-only.
 
 DJV then maps the share with this account: the sync server tells a signed-in
 DJV the account and its password. See docs/lan/share-setup.md.
@@ -109,6 +112,11 @@ if (-not (Test-Path $Path)) {
     }
 }
 $fullPath = if (Test-Path $Path) { (Resolve-Path $Path).ProviderPath } else { $Path }
+# Docker Desktop mounts the folder into the server's container, which it can
+# only do for a folder on a drive of this machine.
+if ($fullPath -notmatch '^[A-Za-z]:\\') {
+    throw "$fullPath is not on a drive of this machine: the sync server could not upload to it. Give a folder like D:\Media."
+}
 if ($PSCmdlet.ShouldProcess($fullPath, "Let $account read the folder")) {
     icacls $fullPath /grant "${account}:(OI)(CI)RX" /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "icacls could not give $account read access to $fullPath." }
@@ -137,6 +145,22 @@ if (-not (Get-NetFirewallRule -DisplayName $firewallRule -ErrorAction SilentlyCo
         New-NetFirewallRule -DisplayName $firewallRule -Direction Inbound -Protocol TCP -LocalPort $Port `
             -Action Allow -Profile Private, Domain | Out-Null
     }
+}
+
+# 5. The sync server's media folder.
+$envFile = Join-Path $PSScriptRoot '.env'
+if ($PSCmdlet.ShouldProcess($envFile, "Set DJV_MEDIA_DIR=$fullPath")) {
+    if (-not (Test-Path $envFile)) {
+        Copy-Item (Join-Path $PSScriptRoot '.env.example') $envFile
+    }
+    $lines = @(Get-Content $envFile)
+    if ($lines -match '^\s*DJV_MEDIA_DIR\s*=') {
+        $lines = $lines -replace '^\s*DJV_MEDIA_DIR\s*=.*$', "DJV_MEDIA_DIR=$fullPath"
+    } else {
+        $lines += "DJV_MEDIA_DIR=$fullPath"
+    }
+    Set-Content -Path $envFile -Value $lines -Encoding ASCII
+    Write-Host "Set DJV_MEDIA_DIR=$fullPath in .env; restart the sync server (.\stop.ps1, .\start.ps1) for it to take effect."
 }
 
 $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |

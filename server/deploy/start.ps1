@@ -65,6 +65,19 @@ if (-not $haveImage) {
 }
 
 New-Item -ItemType Directory -Force -Path 'data' | Out-Null
+
+# The folder of review media, which the portal uploads to. The shared one is
+# set by share-setup.ps1; without it, the videos go to a folder here that
+# nobody else sees.
+$media = $settings['DJV_MEDIA_DIR']
+if ($media) {
+    if (-not (Test-Path -LiteralPath $media -PathType Container)) {
+        throw "The media folder $media (DJV_MEDIA_DIR in .env) is not there."
+    }
+} else {
+    New-Item -ItemType Directory -Force -Path 'media' | Out-Null
+    Write-Warning 'DJV_MEDIA_DIR is not set in .env: uploads go to the "media" folder here, which is not the media share. Run share-setup.ps1, or set it.'
+}
 Invoke-Docker compose up -d
 
 $url = "http://localhost:$port"
@@ -72,7 +85,7 @@ Write-Host "Waiting for $url ..."
 for ($i = 0; $i -lt 30; ++$i) {
     try {
         Invoke-RestMethod "$url/api/health" -TimeoutSec 2 | Out-Null
-        Write-Host "The DJV sync server is running. Admin page: $url/admin (user lldjv, password in secrets\lldjv_password.txt)"
+        Write-Host "The DJV sync server is running. Portal: $url/   Admin page: $url/admin (user lldjv, password in secrets\lldjv_password.txt)"
         return
     } catch {
         Start-Sleep -Seconds 1

@@ -31,13 +31,20 @@
 // See README.md for the protocol.
 
 import { createServer as createHttpServer } from 'node:http';
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
+} from 'node:fs';
+import { link, mkdir, open, rename, rm, unlink } from 'node:fs/promises';
+import { randomBytes, randomInt } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 import { ConfigError, ServerConfig } from './config.js';
+import {
+  UPLOAD_DIR, freeSpace, isVideoPath, listMedia, pathProblem, resolveMedia, sharePath,
+} from './media.js';
 import {
   ROOT_USER, hashPassword, hashPasswordSync, isValidUsername, newToken,
   passwordProblem, tokenHash, verifyPassword, verifyPasswordSync,
@@ -73,6 +80,18 @@ const MARKER_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_BODY = 1024 * 1024;
 const MAX_LOG = 1000;
 
+// How a video is uploaded: in pieces of this size, each one its own
+// request, so that a dropped connection costs one piece rather than the
+// whole file, and an upload can carry on after the page or the server was
+// restarted. Unfinished uploads are dropped after a week.
+const UPLOAD_CHUNK = 32 * 1024 * 1024;
+const UPLOAD_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_UPLOAD = 4 * 1024 ** 4;
+
+// What a session made on the portal says about itself.
+const MAX_DESCRIPTION = 2000;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 // The longest path the media of a session can have. Paths on a network
 // share are long, but not this long; anything longer is not a path.
 const MAX_MEDIA_PATH = 4096;
@@ -83,8 +102,10 @@ const HEARTBEAT_MS = 15000;
 
 // The layout of the database, numbered so that a later server can tell an
 // older file and bring it up to date.
-// Version 2 adds the session tokens.
-const SCHEMA_VERSION = 2;
+// Version 2 adds the session tokens; version 3 who each session is for
+// (session_info) and the unfinished uploads. Both only add tables, which
+// "IF NOT EXISTS" brings into an older file.
+const SCHEMA_VERSION = 3;
 
 class HttpError extends Error {
   // What else the client is told, beside the message: a code it can act
@@ -116,27 +137,90 @@ function isValidSession(name) {
   return SESSION_PATTERN.test(name) && name !== '.' && name !== '..';
 }
 
-// The media of a session as a client sent it, checked. The paths are only
-// passed on: the server never opens them, and need not be able to reach the
-// network storage they are on. Fields the server does not know are kept, so
-// a newer DJV can say more about the media without the server's help.
-function checkMedia(media) {
-  if (!media || typeof media !== 'object' || Array.isArray(media)) {
-    throw new HttpError(400, 'The request has no media.');
-  }
-  const out = { ...media };
-  for (const key of ['path', 'pathAbsolute', 'name', 'sharedBy']) {
-    const value = media[key] ?? '';
+// One file of a session's media, checked: the paths and the name.
+function checkMediaFile(file, what) {
+  const out = { ...file };
+  for (const key of ['path', 'pathAbsolute', 'name']) {
+    const value = file[key] ?? '';
     if (typeof value !== 'string' || value.length > MAX_MEDIA_PATH) {
-      throw new HttpError(400, `The media's "${key}" must be text of up to ${MAX_MEDIA_PATH} characters.`);
+      throw new HttpError(400, `The ${what}'s "${key}" must be text of up to ${MAX_MEDIA_PATH} characters.`);
     }
     out[key] = value;
   }
   if (!out.path && !out.pathAbsolute) {
-    throw new HttpError(400, 'The media has no path.');
+    throw new HttpError(400, `The ${what} has no path.`);
   }
   return out;
 }
+
+// The media of a session as a client sent it, checked. The paths are only
+// passed on: the server never opens them, and need not be able to reach the
+// network storage they are on. Fields the server does not know are kept, so
+// a newer DJV can say more about the media without the server's help.
+//
+// "compare" is the second video of a session that has two, which DJV shows
+// as B beside the first.
+function checkMedia(media) {
+  if (!media || typeof media !== 'object' || Array.isArray(media)) {
+    throw new HttpError(400, 'The request has no media.');
+  }
+  const out = checkMediaFile(media, 'media');
+  const sharedBy = media.sharedBy ?? '';
+  if (typeof sharedBy !== 'string' || sharedBy.length > MAX_MEDIA_PATH) {
+    throw new HttpError(400, `The media's "sharedBy" must be text of up to ${MAX_MEDIA_PATH} characters.`);
+  }
+  out.sharedBy = sharedBy;
+  if (media.compare === undefined || media.compare === null) {
+    delete out.compare;
+  } else if (typeof media.compare !== 'object' || Array.isArray(media.compare)) {
+    throw new HttpError(400, 'The media\'s "compare" must be a file.');
+  } else {
+    out.compare = checkMediaFile(media.compare, 'compare media');
+  }
+  return out;
+}
+
+// The text of a request's field, checked, or the default when it is not
+// given.
+function textField(body, key, max, fallback) {
+  const value = body[key];
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== 'string' || value.length > max) {
+    throw new HttpError(400, `"${key}" must be text of up to ${max} characters.`);
+  }
+  return value.trim();
+}
+
+function checkDate(value) {
+  if (!DATE_PATTERN.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+    throw new HttpError(400, 'The date must be written as YYYY-MM-DD.');
+  }
+  return value;
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// A session name made from what it is about, so that it says something in
+// DJV and in a review file: the date, a few words of the description, and
+// enough randomness that two made the same day about the same thing differ.
+const NAME_ALPHABET = 'abcdefghjkmnpqrstvwxyz23456789';
+
+function sessionName(date, description) {
+  const slug = description
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .slice(0, 40).replace(/-+$/, '');
+  let tail = '';
+  for (let i = 0; i < 4; ++i) {
+    tail += NAME_ALPHABET[randomInt(NAME_ALPHABET.length)];
+  }
+  return [date.replace(/-/g, ''), slug, tail].filter(Boolean).join('-');
+}
+
 
 // The sessions on disk. Each change is one transaction: the session's
 // revision, the marker or media it changed, and the change itself for the
@@ -194,12 +278,50 @@ class Store {
         used     TEXT NOT NULL,
         expires  TEXT NOT NULL
       );
+      -- Who a session is for. A session with no row here was made before
+      -- the server knew, and is open to every user until the admin says
+      -- otherwise; every session made since has one from the start.
+      CREATE TABLE IF NOT EXISTS session_info (
+        name        TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        date        TEXT NOT NULL,
+        createdBy   TEXT NOT NULL,
+        members     TEXT NOT NULL,
+        created     TEXT NOT NULL,
+        updated     TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS uploads (
+        id       TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        path     TEXT NOT NULL,
+        size     INTEGER NOT NULL,
+        received INTEGER NOT NULL,
+        created  TEXT NOT NULL,
+        updated  TEXT NOT NULL
+      );
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
     const db = this.db;
     this.statements = {
       session: db.prepare('SELECT rev, media FROM sessions WHERE name = ?'),
-      sessionNames: db.prepare('SELECT name FROM sessions ORDER BY name'),
+      sessionNames: db.prepare('SELECT name FROM sessions UNION SELECT name FROM session_info ORDER BY name'),
+      sessionMedia: db.prepare('SELECT name, media FROM sessions WHERE media IS NOT NULL'),
+      info: db.prepare('SELECT description, date, createdBy, members, created, updated FROM session_info WHERE name = ?'),
+      putInfo: db.prepare(`
+        INSERT INTO session_info (name, description, date, createdBy, members, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (name) DO UPDATE SET description = excluded.description, date = excluded.date,
+          createdBy = excluded.createdBy, members = excluded.members, updated = excluded.updated`),
+      removeSession: db.prepare('DELETE FROM sessions WHERE name = ?'),
+      removeSessionInfo: db.prepare('DELETE FROM session_info WHERE name = ?'),
+      removeSessionMarkers: db.prepare('DELETE FROM markers WHERE session = ?'),
+      removeSessionDeleted: db.prepare('DELETE FROM deleted WHERE session = ?'),
+      removeSessionEvents: db.prepare('DELETE FROM events WHERE session = ?'),
+      upload: db.prepare('SELECT id, username, path, size, received, created, updated FROM uploads WHERE id = ?'),
+      uploads: db.prepare('SELECT id, username, path, size, received, created, updated FROM uploads ORDER BY created'),
+      uploadFor: db.prepare('SELECT id, username, path, size, received, created, updated FROM uploads WHERE path = ?'),
+      putUpload: db.prepare('INSERT INTO uploads (id, username, path, size, received, created, updated) VALUES (?, ?, ?, ?, 0, ?, ?)'),
+      setReceived: db.prepare('UPDATE uploads SET received = ?, updated = ? WHERE id = ?'),
+      removeUpload: db.prepare('DELETE FROM uploads WHERE id = ?'),
       markers: db.prepare('SELECT data FROM markers WHERE session = ? ORDER BY rowid'),
       deleted: db.prepare('SELECT id, rev FROM deleted WHERE session = ?'),
       events: db.prepare('SELECT data FROM events WHERE session = ? ORDER BY rev'),
@@ -277,7 +399,63 @@ class Store {
   }
 
   has(name) {
-    return this.statements.session.get(name) !== undefined;
+    return this.statements.session.get(name) !== undefined ||
+      this.statements.info.get(name) !== undefined;
+  }
+
+  // Who a session is for, or null for one made before the server knew.
+  info(name) {
+    const row = this.statements.info.get(name);
+    return row ? { ...row, members: JSON.parse(row.members) } : null;
+  }
+
+  putInfo(name, info) {
+    const now = new Date().toISOString();
+    this.statements.putInfo.run(
+      name, info.description, info.date, info.createdBy, JSON.stringify(info.members),
+      info.created ?? now, now);
+  }
+
+  // The media of every session that has some, by session.
+  allMedia() {
+    return this.statements.sessionMedia.all().map(({ name, media }) => ({ name, media: JSON.parse(media) }));
+  }
+
+  // Forget a session and everything in it.
+  removeSession(name) {
+    const s = this.statements;
+    this.transaction(() => {
+      s.removeSession.run(name);
+      s.removeSessionInfo.run(name);
+      s.removeSessionMarkers.run(name);
+      s.removeSessionDeleted.run(name);
+      s.removeSessionEvents.run(name);
+    });
+  }
+
+  upload(id) {
+    return this.statements.upload.get(id) ?? null;
+  }
+
+  uploads() {
+    return this.statements.uploads.all();
+  }
+
+  uploadFor(relative) {
+    return this.statements.uploadFor.get(relative) ?? null;
+  }
+
+  addUpload(id, username, relative, size) {
+    const now = new Date().toISOString();
+    this.statements.putUpload.run(id, username, relative, size, now, now);
+  }
+
+  setReceived(id, received) {
+    this.statements.setReceived.run(received, new Date().toISOString(), id);
+  }
+
+  removeUpload(id) {
+    this.statements.removeUpload.run(id);
   }
 
   names() {
@@ -287,6 +465,7 @@ class Store {
   // The session as it was last written, or an empty one when it never was.
   load(name) {
     const session = new Session(name);
+    session.info = this.info(name);
     const row = this.statements.session.get(name);
     if (!row) {
       return session;
@@ -364,6 +543,9 @@ class Session {
     // The latest changes, oldest first, for a client catching up.
     this.log = [];
     this.clients = new Set();
+    // Who the session is for (Store.info()), or null for one made before
+    // the server knew, which every user can open.
+    this.info = null;
   }
 
   snapshot() {
@@ -429,6 +611,15 @@ function sendJson(res, status, body) {
     'Content-Length': Buffer.byteLength(text),
   });
   res.end(text);
+}
+
+// A request's body, which must be a JSON object.
+async function readObject(req) {
+  const body = await readJson(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HttpError(400, 'The request must be a JSON object.');
+  }
+  return body;
 }
 
 async function readJson(req) {
@@ -533,6 +724,13 @@ export function createSyncServer(options = {}) {
   // share with. It is only held here, never written to the configuration.
   const sharePassword = options.sharePassword ?? '';
   const rootChanged = ensureRoot(config, options.rootPassword ?? '', log);
+  // The folder the media share shares, mounted into the server so that the
+  // portal can list the videos and upload new ones. Without it, the portal
+  // can still show and make sessions of what DJV shares, but not list or
+  // upload videos.
+  const mediaDir = options.mediaDir ?? '';
+  // The size of an upload's pieces; smaller in the tests.
+  const uploadChunk = options.uploadChunk ?? UPLOAD_CHUNK;
 
   mkdirSync(path.dirname(dbFile), { recursive: true });
   const store = new Store(dbFile, { exclusive: options.exclusive ?? false });
@@ -541,6 +739,9 @@ export function createSyncServer(options = {}) {
     store.removeUserTokens(ROOT_USER);
   }
   store.removeExpiredTokens(isoTime(Date.now()));
+  if (mediaDir) {
+    sweepUploads(store, mediaDir, log);
+  }
 
   // Checked against when the user name is not known, so that a wrong name
   // takes as long as a wrong password and does not tell which names exist.
@@ -629,6 +830,56 @@ export function createSyncServer(options = {}) {
     requireUser(user);
     if (!user.admin) {
       throw new HttpError(403, `Only the administrator (${ROOT_USER}) can do this.`, { code: 'not-admin' });
+    }
+  }
+
+  // A session is for the people it was made for: whoever made it, and
+  // whoever they asked in. The administrator sees them all. One made before
+  // the server kept this has no one, and is open to every user.
+  function canSee(user, session) {
+    const info = session.info;
+    return user.admin || info === null ||
+      info.createdBy === user.username || info.members.includes(user.username);
+  }
+
+  // Only whoever made a session, and the administrator, change it.
+  function canEdit(user, session) {
+    return user.admin || (session.info !== null && session.info.createdBy === user.username);
+  }
+
+  function requireMember(user, session) {
+    if (!canSee(user, session)) {
+      throw new HttpError(403, `The session "${session.name}" is not one you were asked to; ask whoever made it to add you.`, { code: 'not-member' });
+    }
+  }
+
+  function requireEditor(user, session) {
+    if (!canEdit(user, session)) {
+      throw new HttpError(403, `Only whoever made the session "${session.name}", or ${ROOT_USER}, can change it.`, { code: 'not-owner' });
+    }
+  }
+
+  // A name nobody has used yet is the user's who first opens it, as DJV
+  // does when someone types a new one: the session is theirs, for them
+  // alone until they ask others in on the portal. A name in use is never
+  // taken over this way.
+  function claim(session, user) {
+    if (session.info !== null || store.has(session.name)) {
+      return;
+    }
+    store.putInfo(session.name, {
+      description: '',
+      date: today(),
+      createdBy: user.username,
+      members: [user.username],
+    });
+    session.info = store.info(session.name);
+    log(`Session "${session.name}" started by ${user.username}`);
+  }
+
+  function requireMediaDir() {
+    if (!mediaDir) {
+      throw new HttpError(503, 'The server has no media folder (MEDIA_DIR), so it cannot list or take videos.', { code: 'no-media-folder' });
     }
   }
 
@@ -786,7 +1037,7 @@ export function createSyncServer(options = {}) {
         return;
       }
       if (parts[2] === 'sessions') {
-        sendJson(res, 200, { sessions: listSessions() });
+        sendJson(res, 200, { sessions: listSessions(user) });
         return;
       }
       if (parts[2] === 'backup') {
@@ -836,18 +1087,414 @@ export function createSyncServer(options = {}) {
     return session;
   }
 
-  function listSessions() {
+  // What the portal and DJV are told about a session. "media" is the name
+  // of its first video, as servers before the portal said.
+  function sessionView(session, user) {
+    const info = session.info;
+    const media = session.media;
+    const videos = media ? [media, media.compare].filter(Boolean).map((file) => ({
+      path: file.path ?? '',
+      pathAbsolute: file.pathAbsolute ?? '',
+      name: file.name || path.posix.basename((file.path || file.pathAbsolute || '').replace(/\\/g, '/')),
+    })) : [];
+    const connected = new Set();
+    for (const client of session.clients) {
+      const stream = streams.get(client);
+      if (stream) {
+        connected.add(stream.user);
+      }
+    }
+    return {
+      session: session.name,
+      rev: session.rev,
+      markers: session.markers.size,
+      clients: session.clients.size,
+      media: media?.name ?? null,
+      description: info?.description ?? '',
+      date: info?.date ?? '',
+      createdBy: info?.createdBy ?? '',
+      members: info?.members ?? null,
+      open: info === null,
+      videos,
+      connected: [...connected].sort(),
+      canEdit: canEdit(user, session),
+      created: info?.created ?? '',
+      updated: info?.updated ?? '',
+    };
+  }
+
+  // The sessions the user can see, the newest first.
+  function listSessions(user) {
     const names = new Set([...sessions.keys(), ...store.names()]);
-    return [...names].filter(isValidSession).sort().map((name) => {
-      const session = getSession(name);
+    return [...names].filter(isValidSession)
+      .map((name) => getSession(name))
+      // A name only looked at, never written to or claimed, is no session.
+      .filter((session) => session.info !== null || session.rev > 0)
+      .filter((session) => canSee(user, session))
+      .map((session) => sessionView(session, user))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || '') ||
+        (b.created || '').localeCompare(a.created || '') || a.session.localeCompare(b.session));
+  }
+
+  // The people a session is for, checked: users the server knows, with
+  // whoever made it always among them.
+  function checkMembers(value, createdBy) {
+    if (value === undefined) {
+      return [createdBy];
+    }
+    if (!Array.isArray(value) || value.length > 500 || value.some((name) => typeof name !== 'string')) {
+      throw new HttpError(400, '"members" must be a list of user names.');
+    }
+    for (const name of value) {
+      if (!config.user(name)) {
+        throw new HttpError(400, `There is no user "${name}".`);
+      }
+    }
+    return [...new Set([createdBy, ...value])];
+  }
+
+  // The session media for one or two videos of the media folder, the
+  // first shown as A and the second as B.
+  function videosMedia(value, user) {
+    requireMediaDir();
+    if (!Array.isArray(value) || value.length < 1 || value.length > 2 ||
+      value.some((video) => typeof video !== 'string')) {
+      throw new HttpError(400, '"videos" must be one or two videos of the media folder.');
+    }
+    if (value.length === 2 && value[0] === value[1]) {
+      throw new HttpError(400, 'The two videos are the same file.');
+    }
+    const file = (relative) => {
+      const problem = pathProblem(relative);
+      if (problem) {
+        throw new HttpError(400, `${relative}: ${problem}`);
+      }
+      let isFile = false;
+      try {
+        isFile = statSync(resolveMedia(mediaDir, relative)).isFile();
+      } catch {
+        // Not there.
+      }
+      if (!isFile || !isVideoPath(relative)) {
+        throw new HttpError(400, `There is no video "${relative}" in the media folder.`);
+      }
       return {
-        session: name,
-        rev: session.rev,
-        markers: session.markers.size,
-        clients: session.clients.size,
-        media: session.media?.name ?? null,
+        path: relative,
+        pathAbsolute: sharePath(config.unc, relative),
+        name: path.posix.basename(relative),
       };
-    });
+    };
+    const media = { ...file(value[0]), sharedBy: user.name || user.username };
+    if (value.length === 2) {
+      media.compare = file(value[1]);
+    }
+    return media;
+  }
+
+  function sameVideos(a, b) {
+    const paths = (media) => (media ? [media.path, media.compare?.path ?? ''] : []);
+    return JSON.stringify(paths(a)) === JSON.stringify(paths(b));
+  }
+
+  async function createSession(req, res, user) {
+    const body = await readObject(req);
+    const description = textField(body, 'description', MAX_DESCRIPTION, '');
+    const date = checkDate(textField(body, 'date', 10, '') || today());
+    const members = checkMembers(body.members, user.username);
+    const media = videosMedia(body.videos, user);
+    let name;
+    do {
+      name = sessionName(date, description);
+    } while (store.has(name) || sessions.has(name));
+    store.putInfo(name, { description, date, createdBy: user.username, members });
+    const session = getSession(name);
+    session.apply({ type: 'media', clientId: '', user: user.username, media }, store);
+    log(`Session "${name}" made by ${user.username}, for ${members.join(', ')}`);
+    sendJson(res, 200, sessionView(session, user));
+  }
+
+  async function changeSession(req, res, session, user) {
+    requireEditor(user, session);
+    const body = await readObject(req);
+    const info = session.info ?? {
+      description: '', date: today(), createdBy: user.username, members: [user.username],
+    };
+    const changed = {
+      description: textField(body, 'description', MAX_DESCRIPTION, info.description),
+      date: body.date === undefined ? info.date : checkDate(textField(body, 'date', 10, '')),
+      createdBy: info.createdBy,
+      members: body.members === undefined ? info.members : checkMembers(body.members, info.createdBy),
+      created: info.created,
+    };
+    // The videos first: a change they cannot have changes nothing.
+    const media = body.videos === undefined ? null : videosMedia(body.videos, user);
+    store.putInfo(session.name, changed);
+    session.info = store.info(session.name);
+    if (media && !sameVideos(media, session.media)) {
+      session.apply({ type: 'media', clientId: '', user: user.username, media }, store);
+    }
+    // Whoever is no longer asked in is no longer told about the changes.
+    for (const client of [...session.clients]) {
+      const stream = streams.get(client);
+      if (stream && !canSee(config.userView(stream.user) ?? { username: stream.user }, session)) {
+        writeEvent(client, { type: 'removed', rev: session.rev });
+        client.end();
+      }
+    }
+    log(`Session "${session.name}" changed by ${user.username}`);
+    sendJson(res, 200, sessionView(session, user));
+  }
+
+  function removeSession(res, session, user) {
+    requireEditor(user, session);
+    // The DJVs in it are told, so that they leave it rather than put it
+    // back with their next note.
+    for (const client of [...session.clients]) {
+      writeEvent(client, { type: 'removed', rev: session.rev });
+      client.end();
+    }
+    session.clients.clear();
+    store.removeSession(session.name);
+    sessions.delete(session.name);
+    log(`Session "${session.name}" removed by ${user.username}`);
+    sendJson(res, 200, { ok: true });
+  }
+
+  // Uploads. Each piece is written where it goes in the unfinished file,
+  // and the file is moved into place once the last one is in.
+  const uploadsBusy = new Set();
+
+  function partFile(id) {
+    return path.join(mediaDir, UPLOAD_DIR, `${id}.part`);
+  }
+
+  function uploadView(upload) {
+    return {
+      id: upload.id,
+      path: upload.path,
+      size: upload.size,
+      received: upload.received,
+      chunkSize: uploadChunk,
+      username: upload.username,
+      created: upload.created,
+      updated: upload.updated,
+    };
+  }
+
+  // Whether the folder already has something of that name. Windows sees
+  // names in any case as the same, and so does a folder of a Windows host
+  // mounted here, but the server cannot count on the mount saying so.
+  function nameTaken(relative) {
+    const target = resolveMedia(mediaDir, relative);
+    if (existsSync(target)) {
+      return true;
+    }
+    try {
+      const name = path.basename(target).toLowerCase();
+      return readdirSync(path.dirname(target)).some((entry) => entry.toLowerCase() === name);
+    } catch {
+      return false;
+    }
+  }
+
+  function requireUploader(upload, user) {
+    if (!upload) {
+      throw new HttpError(404, 'There is no such upload; it was finished, cancelled or dropped.', { code: 'no-upload' });
+    }
+    if (upload.username !== user.username && !user.admin) {
+      throw new HttpError(403, 'The upload is someone else\'s.');
+    }
+  }
+
+  async function startUpload(req, res, user) {
+    requireMediaDir();
+    const body = await readObject(req);
+    const relative = typeof body.path === 'string' ? body.path.trim() : '';
+    const problem = pathProblem(relative);
+    if (problem) {
+      throw new HttpError(400, problem);
+    }
+    if (!isVideoPath(relative)) {
+      throw new HttpError(400, 'Only videos can be uploaded: .mov, .mp4, .m4v, .mxf, .mkv, .avi, .webm, .mpg, .mpeg, .ts, .y4m and .wav files.');
+    }
+    const size = body.size;
+    if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_UPLOAD) {
+      throw new HttpError(400, 'The size of the file must be given, in bytes.');
+    }
+    if (nameTaken(relative)) {
+      throw new HttpError(409, `There is already a file "${relative}" in the media folder.`, { code: 'exists' });
+    }
+    const existing = store.uploadFor(relative);
+    if (existing) {
+      // The same file again, from the same person: carry on where it was.
+      if (existing.username === user.username && existing.size === size && existsSync(partFile(existing.id))) {
+        sendJson(res, 200, uploadView(existing));
+        return;
+      }
+      if (existing.username !== user.username) {
+        throw new HttpError(409, `${existing.username} is uploading a file "${relative}" already.`, { code: 'uploading' });
+      }
+      // Another file of the name, or one whose piece is gone: start again.
+      await rm(partFile(existing.id), { force: true });
+      store.removeUpload(existing.id);
+    }
+    const free = freeSpace(mediaDir);
+    if (free !== null && size > free) {
+      throw new HttpError(507, `The media folder has ${Math.floor(free / 1024 ** 3)} GB free; the file needs ${Math.ceil(size / 1024 ** 3)} GB.`, { code: 'no-space' });
+    }
+    const id = randomBytes(12).toString('hex');
+    await mkdir(path.join(mediaDir, UPLOAD_DIR), { recursive: true });
+    await (await open(partFile(id), 'w')).close();
+    store.addUpload(id, user.username, relative, size);
+    log(`${user.username} is uploading "${relative}" (${size} bytes)`);
+    sendJson(res, 200, uploadView(store.upload(id)));
+  }
+
+  async function receivePiece(req, res, url, user, id) {
+    const upload = store.upload(id);
+    requireUploader(upload, user);
+    const offset = Number(url.searchParams.get('offset'));
+    if (offset !== upload.received) {
+      throw new HttpError(409, `The upload has ${upload.received} bytes; send the piece from there.`, { code: 'offset', received: upload.received });
+    }
+    if (uploadsBusy.has(id)) {
+      throw new HttpError(409, 'A piece of the upload is already on its way.', { code: 'busy', received: upload.received });
+    }
+    const length = Number(req.headers['content-length']);
+    if (!Number.isSafeInteger(length) || length <= 0) {
+      throw new HttpError(411, 'A piece must say its length (Content-Length).');
+    }
+    if (length > uploadChunk || offset + length > upload.size) {
+      throw new HttpError(413, `A piece can be up to ${uploadChunk} bytes, and not go past the end of the file.`);
+    }
+    uploadsBusy.add(id);
+    let file = null;
+    try {
+      file = await open(partFile(id), 'r+');
+      let written = 0;
+      try {
+        for await (const chunk of req) {
+          if (written + chunk.length > length) {
+            throw new HttpError(413, 'The piece is longer than it said.');
+          }
+          await file.write(chunk, 0, chunk.length, offset + written);
+          written += chunk.length;
+        }
+      } catch (error) {
+        if (error instanceof HttpError) {
+          throw error;
+        }
+        written = -1;
+      }
+      if (written !== length) {
+        // Cut off on the way: the piece is sent again, over what came.
+        throw new HttpError(400, 'The piece did not arrive whole; send it again.', { code: 'incomplete', received: upload.received });
+      }
+      const received = offset + length;
+      if (received === upload.size) {
+        await file.sync();
+      }
+      await file.close();
+      file = null;
+      store.setReceived(id, received);
+      if (received < upload.size) {
+        sendJson(res, 200, { received, done: false });
+        return;
+      }
+      const video = await finishUpload({ ...upload, received });
+      sendJson(res, 200, { received, done: true, video });
+    } finally {
+      uploadsBusy.delete(id);
+      await file?.close().catch(() => {});
+    }
+  }
+
+  // Move a whole upload into place, never over a file that is there: a
+  // link fails if the name is taken, where a rename would replace it. A
+  // file system without links gets a rename after a look.
+  async function finishUpload(upload) {
+    const relative = upload.path;
+    const target = resolveMedia(mediaDir, relative);
+    const part = partFile(upload.id);
+    const exists = () => new HttpError(409, `A file "${relative}" was put in the media folder while this one was uploading; cancel this upload, and upload it under another name.`, { code: 'exists' });
+    if (nameTaken(relative)) {
+      throw exists();
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    try {
+      await link(part, target);
+      await unlink(part);
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw exists();
+      }
+      if (existsSync(target)) {
+        throw exists();
+      }
+      await rename(part, target);
+    }
+    store.removeUpload(upload.id);
+    log(`${upload.username} uploaded "${relative}"`);
+    const stat = statSync(target);
+    return {
+      path: relative,
+      name: path.posix.basename(relative),
+      folder: path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative),
+      size: stat.size,
+      modified: stat.mtime.toISOString(),
+    };
+  }
+
+  async function cancelUpload(res, user, id) {
+    const upload = store.upload(id);
+    requireUploader(upload, user);
+    await rm(partFile(id), { force: true });
+    store.removeUpload(id);
+    log(`${user.username} cancelled the upload of "${upload.path}"`);
+    sendJson(res, 200, { ok: true });
+  }
+
+  function videos() {
+    if (!mediaDir) {
+      return { enabled: false, videos: [], folders: [], free: null, uploading: [] };
+    }
+    return {
+      enabled: true,
+      ...listMedia(mediaDir),
+      free: freeSpace(mediaDir),
+      uploading: store.uploads().map((upload) => ({
+        path: upload.path, username: upload.username, size: upload.size, received: upload.received,
+      })),
+    };
+  }
+
+  async function removeVideo(res, url, user) {
+    requireAdmin(user);
+    requireMediaDir();
+    const relative = url.searchParams.get('path') ?? '';
+    const problem = pathProblem(relative);
+    if (problem) {
+      throw new HttpError(400, problem);
+    }
+    const target = resolveMedia(mediaDir, relative);
+    let isFile = false;
+    try {
+      isFile = statSync(target).isFile();
+    } catch {
+      // Not there.
+    }
+    if (!isFile) {
+      throw new HttpError(404, `There is no file "${relative}" in the media folder.`);
+    }
+    const using = store.allMedia()
+      .filter(({ media }) => media.path === relative || media.compare?.path === relative)
+      .map(({ name }) => name);
+    if (using.length > 0 && url.searchParams.get('force') !== '1') {
+      throw new HttpError(409, `The sessions ${using.join(', ')} use "${relative}".`, { code: 'in-use', sessions: using });
+    }
+    await unlink(target);
+    log(`${user.username} deleted "${relative}"`);
+    sendJson(res, 200, { ok: true });
   }
 
   function openStream(req, res, session, since, user, identity) {
@@ -900,10 +1547,12 @@ export function createSyncServer(options = {}) {
     }
 
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-    if (parts[0] === 'admin' && parts.length === 1 && req.method === 'GET') {
-      // The page holds nothing of the server's: what it shows, it asks the
-      // admin requests for, which are where the user is checked.
-      const html = readFileSync(path.join(SERVER_DIR, 'admin.html'));
+    // The pages hold nothing of the server's: what they show, they ask the
+    // requests for, which are where the user is checked. The portal is what
+    // the server's address opens.
+    const page = parts.length === 0 ? 'portal' : parts.length === 1 ? parts[0] : '';
+    if ((page === 'portal' || page === 'admin') && req.method === 'GET') {
+      const html = readFileSync(path.join(SERVER_DIR, `${page}.html`));
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': html.length,
@@ -949,14 +1598,77 @@ export function createSyncServer(options = {}) {
     }
     requireUser(user);
 
-    if (parts.length === 2 && parts[1] === 'sessions' && req.method === 'GET') {
-      sendJson(res, 200, { sessions: listSessions() });
+    if (parts.length === 2 && parts[1] === 'people' && req.method === 'GET') {
+      sendJson(res, 200, {
+        people: config.users.map((person) => ({ username: person.username, name: person.name })),
+      });
       return;
+    }
+    if (parts.length === 2 && parts[1] === 'videos') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, videos());
+        return;
+      }
+      if (req.method === 'DELETE') {
+        await removeVideo(res, url, user);
+        return;
+      }
+    }
+    if (parts[1] === 'uploads') {
+      if (parts.length === 2 && req.method === 'GET') {
+        requireMediaDir();
+        const mine = store.uploads().filter((upload) => user.admin || upload.username === user.username);
+        sendJson(res, 200, { uploads: mine.map(uploadView) });
+        return;
+      }
+      if (parts.length === 2 && req.method === 'POST') {
+        await startUpload(req, res, user);
+        return;
+      }
+      if (parts.length === 3 && req.method === 'PUT') {
+        requireMediaDir();
+        await receivePiece(req, res, url, user, parts[2]);
+        return;
+      }
+      if (parts.length === 3 && req.method === 'DELETE') {
+        requireMediaDir();
+        await cancelUpload(res, user, parts[2]);
+        return;
+      }
+      throw new HttpError(404, 'Not found.');
+    }
+
+    if (parts.length === 2 && parts[1] === 'sessions') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, { sessions: listSessions(user) });
+        return;
+      }
+      if (req.method === 'POST') {
+        await createSession(req, res, user);
+        return;
+      }
     }
     if (parts[1] !== 'sessions' || parts.length < 3) {
       throw new HttpError(404, 'Not found.');
     }
     const session = getSession(parts[2]);
+
+    // Changing or removing a session is for one that is there.
+    const changing = (parts.length === 3 && req.method === 'DELETE') ||
+      (parts.length === 4 && parts[3] === 'info' && req.method === 'PUT');
+    if (changing) {
+      if (!store.has(session.name)) {
+        throw new HttpError(404, `There is no session "${session.name}".`);
+      }
+      if (parts.length === 3) {
+        removeSession(res, session, user);
+      } else {
+        await changeSession(req, res, session, user);
+      }
+      return;
+    }
+    claim(session, user);
+    requireMember(user, session);
 
     if (parts.length === 3 && req.method === 'GET') {
       sendJson(res, 200, session.snapshot());
@@ -1074,6 +1786,34 @@ export function createSyncServer(options = {}) {
   return server;
 }
 
+// Drop the uploads nobody carried on with for a week, and any unfinished
+// file the database knows nothing of.
+function sweepUploads(store, mediaDir, log) {
+  const dir = path.join(mediaDir, UPLOAD_DIR);
+  const known = new Set();
+  const old = Date.now() - UPLOAD_KEEP_MS;
+  for (const upload of store.uploads()) {
+    if (Date.parse(upload.updated) < old) {
+      rmSync(path.join(dir, `${upload.id}.part`), { force: true });
+      store.removeUpload(upload.id);
+      log(`Dropped the unfinished upload of "${upload.path}" by ${upload.username}`);
+    } else {
+      known.add(`${upload.id}.part`);
+    }
+  }
+  let files = [];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    if (!known.has(file)) {
+      rmSync(path.join(dir, file), { force: true, recursive: true });
+    }
+  }
+}
+
 // A secret, from the file NAME_FILE names -- a Docker secret, say -- or from
 // NAME itself. A file written on Windows may start with a byte order mark
 // and end with a line break, neither of which is part of the password.
@@ -1102,13 +1842,17 @@ function main() {
   const dbFile = process.env.DB_FILE || undefined;
   const configFile = process.env.CONFIG_FILE || path.join(SERVER_DIR, 'config.json');
   const exclusive = ['1', 'true', 'yes'].includes((process.env.DB_EXCLUSIVE ?? '').toLowerCase());
+  const mediaDir = process.env.MEDIA_DIR ?? '';
   const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
   let server;
   let sharePassword;
   try {
     const rootPassword = secret('ROOT_PASSWORD', log);
     sharePassword = secret('SHARE_PASSWORD', log);
-    server = createSyncServer({ dataDir, dbFile, configFile, rootPassword, sharePassword, exclusive, log });
+    if (mediaDir && !existsSync(mediaDir)) {
+      throw new ConfigError(`The media folder MEDIA_DIR (${mediaDir}) is not there.`);
+    }
+    server = createSyncServer({ dataDir, dbFile, configFile, rootPassword, sharePassword, exclusive, mediaDir, log });
   } catch (error) {
     // A configuration that cannot be read stops the server rather than
     // start it with none: it would have no users, and no administrator.
@@ -1117,7 +1861,9 @@ function main() {
   }
   server.listen(port, host, () => {
     log(`DJV sync server ${SERVER_VERSION} on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${exclusive ? ' (exclusive)' : ''}`);
-    log(`Configuration in ${configFile}; admin page at http://${host}:${port}/admin, as "${ROOT_USER}"`);
+    log(`Configuration in ${configFile}; portal at http://${host}:${port}/, admin page at /admin, as "${ROOT_USER}"`);
+    log(mediaDir ? `Videos in ${mediaDir}` : 'No media folder (MEDIA_DIR): the portal cannot list or upload videos.');
+
     if (!server.config.unc) {
       log('No storage share is set; DJV clients will not map a drive. Set it on the admin page.');
     } else if (!sharePassword) {

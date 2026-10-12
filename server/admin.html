@@ -77,7 +77,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
   <div id="content" hidden>
     <section>
       <h2>Users</h2>
-      <p class="hint">The people who may sign in to DJV with this server. Give each one a name and a password; they type both into DJV's Sync Server settings once.</p>
+      <p class="hint">The people who may sign in to DJV, and to the <a href="/">portal</a>, with this server. Give each one a name and a password; they type both into DJV's Sync Server settings once.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>User</th><th>Name</th><th>Last sign-in</th><th>PC</th><th>DJV</th><th>Connected</th><th></th></tr></thead>
         <tbody id="users"></tbody>
@@ -100,8 +100,9 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 
     <section>
       <h2>Sessions</h2>
+      <p class="hint">Every session, whoever it is for. They are made, changed and deleted on the <a href="/">portal</a>, where you see them all too.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Session</th><th>Media</th><th>Markers</th><th>Changes</th><th>Following</th></tr></thead>
+        <thead><tr><th>Session</th><th>Date</th><th>Videos</th><th>People</th><th>Markers</th><th>Changes</th><th>Following</th></tr></thead>
         <tbody id="sessions"></tbody>
       </table></div>
     </section>
@@ -205,9 +206,12 @@ async function refresh() {
       <td>${versionCell(c.version)}</td><td>${esc(c.ip)}</td><td>${when(c.since)}</td></tr>`,
     'No one is connected.', 6);
   rows('sessions', sessions.sessions, (s) => `<tr>
-      <td><code>${esc(s.session)}</code></td><td>${esc(s.media ?? '')}</td>
-      <td>${s.markers}</td><td>${s.rev}</td><td>${s.clients}</td></tr>`,
-    'No sessions yet.', 5);
+      <td><code>${esc(s.session)}</code>${s.description ? `<div class="hint">${esc(s.description)}</div>` : ''}</td>
+      <td>${esc(s.date)}</td>
+      <td>${s.videos.map((v) => esc(v.name)).join('<br>')}</td>
+      <td>${s.members === null ? '<span class="hint">everyone</span>' : s.members.map((u) => u === s.createdBy ? `<b>${esc(u)}</b>` : esc(u)).join(', ')}</td>
+      <td>${s.markers}</td><td>${s.rev}</td><td>${s.connected.join(', ')}</td></tr>`,
+    'No sessions yet.', 7);
 }
 
 async function loadConfig() {

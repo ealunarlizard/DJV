@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright Contributors to the DJV project. -->
+<!--
+  The DJV review portal: what the sync server's address opens. Everyone who
+  signs in to DJV signs in here with the same name and password, and can
+  upload videos to the media share, make a review session of one or two of
+  them for the people they choose, and open a session in DJV with its
+  "review" link.
+
+  Self-contained -- no fonts, scripts or styles from elsewhere -- since the
+  studio network it runs on need not reach the internet. It holds nothing of
+  the server's: everything it shows comes from the /api requests, which check
+  who is asking.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DJV review portal</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+  --border: #dddcd6; --accent: #2f6fdb; --ok: #1f8a4c; --warn: #b26a00; --bad: #c0392b;
+  --track: #e8e7e2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181a; --panel: #222225; --text: #ececea; --muted: #9a9a94;
+    --border: #36363a; --accent: #6b9cf0; --ok: #4cc27f; --warn: #e0a040; --bad: #ef6b5b;
+    --track: #2e2e32;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 18px; }
+header .meta { color: var(--muted); }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: baseline; }
+nav { display: flex; gap: 4px; padding: 0 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+nav button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 10px 12px; color: var(--muted); }
+nav button.current { color: var(--text); border-bottom-color: var(--accent); }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+section h2 { margin: 0 0 12px; font-size: 15px; }
+.hint { color: var(--muted); font-size: 13px; }
+p.hint { margin: -6px 0 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+td.empty { color: var(--muted); font-style: italic; }
+td.buttons { white-space: nowrap; text-align: right; }
+td.num { text-align: right; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+input[type=text], input[type=password], input[type=date], input[type=search], select, textarea {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: inherit;
+}
+textarea { min-height: 60px; resize: vertical; }
+button, a.button { display: inline-block; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; text-decoration: none; }
+button.primary, a.review { background: var(--accent); border-color: var(--accent); color: #fff; }
+a.review { font-weight: 600; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.form { display: grid; grid-template-columns: 160px 1fr; gap: 10px 12px; align-items: start; }
+.form > label, .form > span.label { padding-top: 6px; }
+.actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
+.chip { display: inline-block; padding: 1px 8px; margin: 0 4px 4px 0; border-radius: 10px; font-size: 12px; background: var(--track); white-space: nowrap; }
+.chip.live { background: var(--ok); color: #fff; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+#message { min-height: 1.4em; }
+#login { max-width: 420px; }
+.people { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 6px; }
+.people label { white-space: nowrap; }
+.pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pick select { height: 180px; }
+.drop { border: 2px dashed var(--border); border-radius: 8px; padding: 18px; text-align: center; color: var(--muted); }
+.drop.over { border-color: var(--accent); color: var(--text); }
+.bar { height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; }
+.upload .state { font-size: 12px; color: var(--muted); }
+.filter { max-width: 320px; }
+.desc { white-space: pre-wrap; }
+@media (max-width: 720px) {
+  .form, .pick { grid-template-columns: 1fr; }
+  header, nav { padding-left: 16px; padding-right: 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">DJV review portal</h1>
+  <span class="meta" id="meta"></span>
+  <span id="message"></span>
+  <span class="right"><span class="meta" id="who"></span><a class="button" id="admin-link" href="/admin" hidden>Admin</a><button id="sign-out" hidden>Sign out</button></span>
+</header>
+<nav id="tabs" hidden>
+  <button data-tab="sessions" class="current">Sessions</button>
+  <button data-tab="new">New session</button>
+  <button data-tab="videos">Videos</button>
+</nav>
+<main>
+  <section id="login" hidden>
+    <h2>Sign in</h2>
+    <p class="hint">With the user name and password you use in DJV.</p>
+    <form id="login-form" class="form">
+      <label for="username">User</label><input type="text" id="username" autocomplete="username">
+      <label for="password">Password</label><input type="password" id="password" autocomplete="current-password">
+    </form>
+    <div class="actions"><button class="primary" form="login-form">Sign in</button></div>
+  </section>
+
+  <section id="tab-sessions" hidden>
+    <h2>Sessions</h2>
+    <p class="hint"><b>review</b> opens the session in DJV on this PC, signed in, with its videos. DJV must have been installed, or started once, on this PC, and set to this server.</p>
+    <div class="actions" style="margin: 0 0 12px"><input type="search" class="filter" id="session-filter" placeholder="Filter by description, video or person"></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>Description</th><th>Videos</th><th>People</th><th>Notes</th><th></th></tr></thead>
+      <tbody id="sessions"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-new" hidden>
+    <h2 id="edit-title">New session</h2>
+    <p class="hint" id="edit-hint">Pick one video, or two to compare them side by side in DJV. Only the people you tick, and you, see the session.</p>
+    <form id="session-form" class="form">
+      <label for="s-description">Description</label><textarea id="s-description" maxlength="2000" placeholder="SH010 lighting, v1 against v2"></textarea>
+      <label for="s-date">Date</label><input type="date" id="s-date" style="max-width: 200px">
+      <span class="label">People</span><div class="people" id="s-people"></div>
+      <span class="label">Videos</span>
+      <div>
+        <input type="search" id="s-filter" placeholder="Find a video" style="margin-bottom: 8px">
+        <div class="pick">
+          <label>A (shown first)<select id="s-video-a" size="8"></select></label>
+          <label>B (compared with A, optional)<select id="s-video-b" size="8"></select></label>
+        </div>
+        <div class="hint" id="s-picked"></div>
+      </div>
+    </form>
+    <div class="actions">
+      <button class="primary" form="session-form" id="s-save">Create session</button>
+      <button id="s-cancel" hidden>Cancel</button>
+    </div>
+  </section>
+
+  <section id="tab-videos" hidden>
+    <h2>Upload</h2>
+    <p class="hint" id="media-hint"></p>
+    <div id="upload-panel">
+      <div class="form">
+        <label for="u-folder">Into the folder</label>
+        <div><input type="text" id="u-folder" list="u-folders" placeholder="(the top of the media folder)" autocomplete="off"><datalist id="u-folders"></datalist>
+          <div class="hint">Pick a folder, or type a new one, like <code>shots/sh010</code>.</div></div>
+      </div>
+      <div class="drop" id="drop" style="margin-top: 12px">Drop videos here, or <button id="u-choose">choose files</button><input type="file" id="u-files" multiple accept=".mov,.mp4,.m4v,.mxf,.mkv,.avi,.webm,.mpg,.mpeg,.ts,.y4m,.wav" hidden></div>
+      <div id="uploads" style="margin-top: 12px"></div>
+    </div>
+  </section>
+
+  <section id="tab-videos-list" hidden>
+    <h2>Videos</h2>
+    <p class="hint">What the media share holds, as DJV sees it.</p>
+    <div class="actions" style="margin: 0 0 12px"><input type="search" class="filter" id="video-filter" placeholder="Filter"><span class="hint" id="free"></span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Video</th><th>Folder</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody id="videos"></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+'use strict';
+const STORE = 'djv-portal-session';
+let token = '';
+try { token = sessionStorage.getItem(STORE) ?? ''; } catch {}
+let me = null;
+let people = [];
+let media = { enabled: false, videos: [], folders: [], uploading: [] };
+let sessions = [];
+let tab = 'sessions';
+let editing = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
+const day = (date) => date ? new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+const nameOf = (username) => people.find((p) => p.username === username)?.name || username;
+
+function size(bytes) {
+  if (bytes === null || bytes === undefined) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let value = bytes;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; ++i; }
+  return `${value.toFixed(i === 0 || value >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
+function say(text, kind = '') {
+  $('message').className = kind;
+  $('message').textContent = text;
+}
+
+function setToken(value) {
+  token = value;
+  try {
+    if (token) sessionStorage.setItem(STORE, token);
+    else sessionStorage.removeItem(STORE);
+  } catch {}
+}
+
+async function api(method, path, body) {
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetch(`/api/${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const json = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    signedOut();
+    throw new Error(json.error ?? 'Sign in first.');
+  }
+  if (!res.ok) {
+    const error = new Error(json.error ?? `HTTP ${res.status}`);
+    error.status = res.status;
+    error.body = json;
+    throw error;
+  }
+  return json;
+}
+
+function signedOut() {
+  setToken('');
+  me = null;
+  for (const upload of uploads) upload.pause();
+  $('login').hidden = false;
+  $('tabs').hidden = true;
+  for (const id of ['tab-sessions', 'tab-new', 'tab-videos', 'tab-videos-list']) $(id).hidden = true;
+  $('sign-out').hidden = true;
+  $('admin-link').hidden = true;
+  $('who').textContent = '';
+  $('username').focus();
+}
+
+function show(name) {
+  tab = name;
+  for (const button of document.querySelectorAll('nav button')) button.classList.toggle('current', button.dataset.tab === name);
+  $('tab-sessions').hidden = name !== 'sessions';
+  $('tab-new').hidden = name !== 'new';
+  $('tab-videos').hidden = name !== 'videos';
+  $('tab-videos-list').hidden = name !== 'videos';
+  if (name === 'new' && !editing) resetForm();
+}
+
+// --- Sessions --------------------------------------------------------------
+
+function reviewLink(session) {
+  return `djv://session/${encodeURIComponent(session)}?server=${encodeURIComponent(location.origin)}`;
+}
+
+function renderSessions() {
+  const filter = $('session-filter').value.trim().toLowerCase();
+  const shown = sessions.filter((s) => !filter || [
+    s.session, s.description, s.createdBy, ...(s.members ?? []).map(nameOf), ...(s.members ?? []), ...s.videos.map((v) => v.path || v.name),
+  ].join(' ').toLowerCase().includes(filter));
+  $('sessions').innerHTML = shown.length ? shown.map((s) => {
+    const live = new Set(s.connected);
+    const members = s.members === null ? '<span class="hint">everyone (an older session)</span>' :
+      s.members.map((u) => `<span class="chip ${live.has(u) ? 'live' : ''}" title="${live.has(u) ? 'in DJV now' : esc(u)}">${esc(nameOf(u))}${u === s.createdBy ? ' ★' : ''}</span>`).join('');
+    const videos = s.videos.length ? s.videos.map((v, i) => `<div><span class="badge">${i ? 'B' : 'A'}</span> ${esc(v.name)}</div>`).join('') :
+      '<span class="hint">none yet</span>';
+    return `<tr>
+      <td style="white-space: nowrap">${esc(day(s.date))}</td>
+      <td><div class="desc">${esc(s.description) || '<span class="hint">(no description)</span>'}</div><code>${esc(s.session)}</code></td>
+      <td>${videos}</td>
+      <td>${members}</td>
+      <td class="num">${s.markers}</td>
+      <td class="buttons">
+        <a class="button review" href="${esc(reviewLink(s.session))}" title="Open in DJV">review</a>
+        <button data-copy="${esc(s.session)}" title="Copy the review link, to send to someone">Copy link</button>
+        ${s.canEdit ? `<button data-edit="${esc(s.session)}">Edit</button> <button class="danger" data-remove="${esc(s.session)}">Delete</button>` : ''}
+      </td></tr>`;
+  }).join('') : `<tr><td class="empty" colspan="6">${sessions.length ? 'No session matches.' : 'No sessions yet. Make one under New session.'}</td></tr>`;
+}
+
+async function loadSessions() {
+  sessions = (await api('GET', 'sessions')).sessions;
+  renderSessions();
+}
+
+function videoOptions(select, selected, none) {
+  const filter = $('s-filter').value.trim().toLowerCase();
+  const list = media.videos.filter((v) => !filter || v.path.toLowerCase().includes(filter) || v.path === selected);
+  select.innerHTML = (none ? `<option value="">— none —</option>` : '') + list.map((v) =>
+    `<option value="${esc(v.path)}" ${v.path === selected ? 'selected' : ''}>${esc(v.path)} (${size(v.size)})</option>`).join('');
+  if (selected && !media.videos.some((v) => v.path === selected)) {
+    // A video the session has that is no longer in the folder.
+    select.insertAdjacentHTML('beforeend', `<option value="${esc(selected)}" selected>${esc(selected)} (missing)</option>`);
+  }
+}
+
+function renderPicker() {
+  const a = $('s-video-a').value;
+  const b = $('s-video-b').value;
+  videoOptions($('s-video-a'), a, false);
+  videoOptions($('s-video-b'), b, true);
+  pickedText();
+}
+
+function pickedText() {
+  const a = $('s-video-a').value;
+  const b = $('s-video-b').value;
+  $('s-picked').textContent = !a ? (media.enabled ? 'Pick video A.' : 'The server has no media folder, so there are no videos to pick.') :
+    b ? `A: ${a}  ·  B: ${b}` : `A: ${a}`;
+}
+
+function renderPeople(checked) {
+  $('s-people').innerHTML = people.map((p) => {
+    const self = p.username === me.username;
+    const owner = editing ? p.username === editing.createdBy : self;
+    return `<label><input type="checkbox" value="${esc(p.username)}" ${owner || checked.has(p.username) ? 'checked' : ''} ${owner ? 'disabled' : ''}>
+      ${esc(p.name || p.username)}${owner ? ' (owner)' : ''}</label>`;
+  }).join('');
+}
+
+function resetForm() {
+  editing = null;
+  $('edit-title').textContent = 'New session';
+  $('s-save').textContent = 'Create session';
+  $('s-cancel').hidden = true;
+  $('s-description').value = '';
+  $('s-date').value = today();
+  $('s-filter').value = '';
+  renderPeople(new Set());
+  videoOptions($('s-video-a'), '', false);
+  videoOptions($('s-video-b'), '', true);
+  pickedText();
+}
+
+function editSession(s) {
+  editing = s;
+  show('new');
+  $('edit-title').textContent = `Edit session ${s.session}`;
+  $('s-save').textContent = 'Save changes';
+  $('s-cancel').hidden = false;
+  $('s-description').value = s.description;
+  $('s-date').value = s.date || today();
+  $('s-filter').value = '';
+  renderPeople(new Set(s.members ?? []));
+  videoOptions($('s-video-a'), s.videos[0]?.path ?? '', false);
+  videoOptions($('s-video-b'), s.videos[1]?.path ?? '', true);
+  pickedText();
+}
+
+$('session-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const a = $('s-video-a').value;
+  const b = $('s-video-b').value;
+  const body = {
+    description: $('s-description').value,
+    date: $('s-date').value || today(),
+    members: [...$('s-people').querySelectorAll('input:checked')].map((input) => input.value),
+  };
+  try {
+    if (!editing && !a) throw new Error('Pick video A.');
+    if (a) body.videos = b && b !== a ? [a, b] : [a];
+    else if (b) throw new Error('Pick video A, to compare B with.');
+    const s = editing ?
+      await api('PUT', `sessions/${encodeURIComponent(editing.session)}/info`, body) :
+      await api('POST', 'sessions', body);
+    say(editing ? `Session ${s.session} saved.` : `Session ${s.session} made. Click review to open it in DJV.`, 'ok');
+    editing = null;
+    await loadSessions();
+    show('sessions');
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+});
+
+$('s-cancel').addEventListener('click', () => { editing = null; show('sessions'); });
+$('s-filter').addEventListener('input', renderPicker);
+$('s-video-a').addEventListener('change', pickedText);
+$('s-video-b').addEventListener('change', pickedText);
+$('session-filter').addEventListener('input', renderSessions);
+
+// --- Videos ----------------------------------------------------------------
+
+function renderVideos() {
+  const filter = $('video-filter').value.trim().toLowerCase();
+  const list = media.videos.filter((v) => !filter || v.path.toLowerCase().includes(filter));
+  $('videos').innerHTML = list.length ? list.map((v) => `<tr>
+      <td>${esc(v.name)}</td><td><code>${esc(v.folder)}</code></td>
+      <td class="num">${size(v.size)}</td><td>${when(v.modified)}</td>
+      <td class="buttons">${me?.admin ? `<button class="danger" data-delete-video="${esc(v.path)}">Delete</button>` : ''}</td></tr>`).join('') :
+    `<tr><td class="empty" colspan="5">${media.enabled ? (media.videos.length ? 'No video matches.' : 'No videos yet: upload some above.') : 'The server has no media folder.'}</td></tr>`;
+  $('free').textContent = media.free === null || media.free === undefined ? '' : `${size(media.free)} free`;
+  $('u-folders').innerHTML = media.folders.map((f) => `<option value="${esc(f)}">`).join('');
+  $('upload-panel').hidden = !media.enabled;
+  $('media-hint').textContent = media.enabled ?
+    'Videos go into the media share, where every DJV finds them. A file is listed once all of it is in; a large one can be paused, and carries on if the connection drops.' :
+    'The server has no media folder (MEDIA_DIR), so it cannot take uploads. See docker-deploy.md.';
+}
+
+async function loadVideos() {
+  media = await api('GET', 'videos');
+  renderVideos();
+  if (tab === 'new') renderPicker();
+  renderUnfinished();
+}
+
+$('video-filter').addEventListener('input', renderVideos);
+
+// --- Uploads ---------------------------------------------------------------
+//
+// A file goes up in pieces, one request each, in order. A piece that fails
+// is sent again after a pause that grows, so that a dropped connection or a
+// restarted server costs one piece; the server remembers how much of each
+// upload it has, so choosing the same file again later carries on from
+// there.
+
+const uploads = [];
+const RUNNING_AT_ONCE = 3;
+const RETRY_DELAYS = [1, 2, 4, 8, 15, 30, 30, 60];
+
+class Upload {
+  constructor(file, path) {
+    this.file = file;
+    this.path = path;
+    this.id = '';
+    this.received = 0;
+    this.chunkSize = 0;
+    this.sent = 0;
+    this.state = 'waiting';
+    this.error = '';
+    this.xhr = null;
+    this.paused = false;
+    this.element = document.createElement('div');
+    this.element.className = 'upload';
+    this.element.style.marginBottom = '10px';
+    $('uploads').prepend(this.element);
+    this.render();
+  }
+
+  render() {
+    const done = this.state === 'done';
+    const fraction = this.file.size ? (this.received + this.sent) / this.file.size : 1;
+    const state = {
+      waiting: 'waiting', starting: 'starting', running: `${size(this.received + this.sent)} of ${size(this.file.size)}`,
+      paused: `paused at ${size(this.received)} of ${size(this.file.size)}`, retrying: this.error,
+      done: 'uploaded', failed: this.error, cancelled: 'cancelled',
+    }[this.state];
+    this.element.innerHTML = `<div style="display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap">
+        <b>${esc(this.path)}</b> <span class="state ${this.state === 'failed' ? 'bad' : done ? 'ok' : ''}">${esc(state)}</span>
+        <span style="margin-left: auto">
+          ${['running', 'starting', 'retrying', 'waiting'].includes(this.state) ? '<button data-act="pause">Pause</button>' : ''}
+          ${['paused', 'failed'].includes(this.state) ? '<button data-act="resume">Resume</button>' : ''}
+          ${!['done', 'cancelled'].includes(this.state) ? '<button class="danger" data-act="cancel">Cancel</button>' : ''}
+        </span></div>
+      ${done || this.state === 'cancelled' ? '' : `<div class="bar"><div style="width: ${(fraction * 100).toFixed(1)}%"></div></div>`}`;
+    this.element.querySelector('[data-act=pause]')?.addEventListener('click', () => this.pause());
+    this.element.querySelector('[data-act=resume]')?.addEventListener('click', () => this.resume());
+    this.element.querySelector('[data-act=cancel]')?.addEventListener('click', () => this.cancel());
+  }
+
+  get active() {
+    return ['starting', 'running', 'retrying'].includes(this.state);
+  }
+
+  pause() {
+    if (['done', 'cancelled', 'failed'].includes(this.state)) return;
+    this.paused = true;
+    this.xhr?.abort();
+    this.state = 'paused';
+    this.sent = 0;
+    this.render();
+    pump();
+  }
+
+  resume() {
+    this.paused = false;
+    this.error = '';
+    this.state = 'waiting';
+    this.render();
+    pump();
+  }
+
+  async cancel() {
+    this.paused = true;
+    this.xhr?.abort();
+    this.state = 'cancelled';
+    this.render();
+    if (this.id) await api('DELETE', `uploads/${this.id}`).catch(() => {});
+    setTimeout(() => this.element.remove(), 2000);
+    pump();
+    loadVideos().catch(() => {});
+  }
+
+  async run() {
+    let attempt = 0;
+    this.state = 'starting';
+    this.render();
+    while (!this.paused) {
+      try {
+        if (!this.id) {
+          const started = await api('POST', 'uploads', { path: this.path, size: this.file.size });
+          this.id = started.id;
+          this.received = started.received;
+          this.chunkSize = started.chunkSize;
+        }
+        this.state = 'running';
+        this.render();
+        const end = Math.min(this.received + this.chunkSize, this.file.size);
+        const answer = await this.piece(this.file.slice(this.received, end));
+        this.received = answer.received;
+        this.sent = 0;
+        attempt = 0;
+        if (answer.done) {
+          this.state = 'done';
+          this.render();
+          say(`${this.path} uploaded.`, 'ok');
+          loadVideos().catch(() => {});
+          return;
+        }
+      } catch (error) {
+        if (this.paused) return;
+        this.sent = 0;
+        if (error.status === 409 && error.body?.received !== undefined) {
+          // The server has more, or less, than thought: go on from there.
+          this.received = error.body.received;
+          continue;
+        }
+        if (error.status === 404 && error.body?.code === 'no-upload') {
+          // Dropped on the server: start it again.
+          this.id = '';
+          this.received = 0;
+          continue;
+        }
+        const final = error.status && error.status < 500 && error.status !== 408 && error.status !== 429;
+        if (final || attempt >= RETRY_DELAYS.length) {
+          this.state = 'failed';
+          this.error = error.message;
+          this.render();
+          return;
+        }
+        const wait = RETRY_DELAYS[attempt++];
+        this.state = 'retrying';
+        this.error = `${error.message}; trying again in ${wait} s`;
+        this.render();
+        await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+      }
+    }
+  }
+
+  // One piece, with XMLHttpRequest rather than fetch for its progress.
+  piece(blob) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      this.xhr = xhr;
+      xhr.open('PUT', `/api/uploads/${this.id}?offset=${this.received}`);
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.upload.onprogress = (event) => {
+        this.sent = event.loaded;
+        this.render();
+      };
+      xhr.onload = () => {
+        this.xhr = null;
+        let json = {};
+        try { json = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 401) {
+          signedOut();
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(json);
+        } else {
+          const error = new Error(json.error ?? `HTTP ${xhr.status}`);
+          error.status = xhr.status;
+          error.body = json;
+          reject(error);
+        }
+      };
+      xhr.onerror = () => { this.xhr = null; reject(new Error('The connection to the server was lost')); };
+      xhr.onabort = () => { this.xhr = null; reject(new Error('Stopped')); };
+      xhr.send(blob);
+    });
+  }
+}
+
+function pump() {
+  const running = uploads.filter((u) => u.active).length;
+  for (const upload of uploads.filter((u) => u.state === 'waiting').slice(0, Math.max(0, RUNNING_AT_ONCE - running))) {
+    upload.run().finally(pump);
+  }
+}
+
+function folderPath() {
+  return $('u-folder').value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+}
+
+function add(files, path) {
+  for (const file of files) {
+    const target = path ?? (folderPath() ? `${folderPath()}/${file.name}` : file.name);
+    if (uploads.some((u) => u.path === target && !['done', 'cancelled', 'failed'].includes(u.state))) continue;
+    uploads.push(new Upload(file, target));
+  }
+  pump();
+}
+
+// Uploads the server has unfinished from before the page was last open:
+// the browser cannot reopen the file by itself, so it is asked for again.
+function renderUnfinished() {
+  const mine = media.uploading.filter((u) => u.username === me?.username &&
+    !uploads.some((x) => x.path === u.path && x.state !== 'cancelled'));
+  let box = $('unfinished');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'unfinished';
+    $('uploads').before(box);
+  }
+  box.innerHTML = mine.map((u) => `<div class="upload" style="margin-top: 10px">
+      <b>${esc(u.path)}</b> <span class="state warn">unfinished, ${size(u.received)} of ${size(u.size)}</span>
+      <button data-carry-on="${esc(u.path)}">Carry on…</button></div>`).join('');
+}
+
+let carryOn = '';
+$('u-choose').addEventListener('click', () => { carryOn = ''; $('u-files').click(); });
+$('u-files').addEventListener('change', () => {
+  const files = [...$('u-files').files];
+  $('u-files').value = '';
+  if (carryOn) {
+    const u = media.uploading.find((x) => x.path === carryOn);
+    if (files[0] && u && files[0].size !== u.size) {
+      say(`That file is ${size(files[0].size)}; the unfinished one is ${size(u.size)}. Choose the same file.`, 'bad');
+      return;
+    }
+    add(files.slice(0, 1), carryOn);
+    carryOn = '';
+    renderUnfinished();
+  } else {
+    add(files);
+  }
+});
+const drop = $('drop');
+drop.addEventListener('dragover', (event) => { event.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (event) => {
+  event.preventDefault();
+  drop.classList.remove('over');
+  add([...event.dataTransfer.files]);
+});
+window.addEventListener('beforeunload', (event) => {
+  if (uploads.some((u) => u.active || u.state === 'waiting')) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+
+// --- The rest --------------------------------------------------------------
+
+document.addEventListener('click', async (event) => {
+  const data = event.target.dataset ?? {};
+  try {
+    if (data.tab) {
+      show(data.tab);
+    } else if (data.edit) {
+      editSession(sessions.find((s) => s.session === data.edit));
+    } else if (data.remove) {
+      if (!confirm(`Delete the session ${data.remove}, and all its notes? Whoever has it open in DJV is taken out of it. The videos stay.`)) return;
+      await api('DELETE', `sessions/${encodeURIComponent(data.remove)}`);
+      say(`Session ${data.remove} deleted.`, 'ok');
+      await loadSessions();
+    } else if (data.copy) {
+      await navigator.clipboard.writeText(reviewLink(data.copy));
+      say('Review link copied.', 'ok');
+    } else if (data.deleteVideo) {
+      if (!confirm(`Delete ${data.deleteVideo} from the media share? This cannot be undone.`)) return;
+      try {
+        await api('DELETE', `videos?path=${encodeURIComponent(data.deleteVideo)}`);
+      } catch (error) {
+        if (error.body?.code !== 'in-use' || !confirm(`${error.message} Delete it anyway? Those sessions will not find it.`)) throw error;
+        await api('DELETE', `videos?path=${encodeURIComponent(data.deleteVideo)}&force=1`);
+      }
+      say(`${data.deleteVideo} deleted.`, 'ok');
+      await loadVideos();
+    } else if (data.carryOn) {
+      carryOn = data.carryOn;
+      $('u-files').click();
+    }
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+});
+
+async function refresh() {
+  await Promise.all([loadSessions(), loadVideos()]);
+}
+
+async function start() {
+  try {
+    const hello = await (await fetch('/api/hello', { headers: token ? { Authorization: `Bearer ${token}` } : {} })).json();
+    $('title').textContent = hello.name || 'DJV review portal';
+    document.title = `${hello.name || 'DJV'} – review portal`;
+    $('meta').textContent = `server ${hello.serverVersion ?? ''}`;
+    if (!token || !hello.signedIn) {
+      signedOut();
+      return;
+    }
+    me = hello.user;
+    people = (await api('GET', 'people')).people;
+    $('login').hidden = true;
+    $('tabs').hidden = false;
+    $('sign-out').hidden = false;
+    $('admin-link').hidden = !me.admin;
+    $('who').textContent = `Signed in as ${me.name || me.username}`;
+    await refresh();
+    show(tab);
+    say('');
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+}
+
+$('login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('username').value.trim(), password: $('password').value }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+    $('password').value = '';
+    setToken(json.token);
+    await start();
+  } catch (error) {
+    say(error.message, 'bad');
+  }
+});
+
+$('sign-out').addEventListener('click', async () => {
+  await api('POST', 'logout').catch(() => {});
+  signedOut();
+  say('Signed out.');
+});
+
+// Keep the lists current, but not while someone is filling in a session.
+setInterval(() => {
+  if (!me || tab === 'new') return;
+  refresh().catch((error) => say(error.message, 'bad'));
+}, 10000);
+
+start();
+</script>
+</body>
+</html>
