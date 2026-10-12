@@ -381,6 +381,30 @@ namespace djv
                     }
                 });
 
+            // A review link from the server's portal, as the portal's
+            // "review" button gives it to DJV.
+            _addCommand(
+                "SyncOpenLink",
+                "Open a review link from the sync server's portal: close the "
+                "review, join the session and open its videos; e.g., "
+                "{ \"url\": \"djv://session/sh010?server=http%3A%2F%2F192.168.1.40%3A8877\" }.",
+                [appWeak](const nlohmann::json& args)
+                {
+                    if (auto app = appWeak.lock())
+                    {
+                        std::string url;
+                        if (args.is_object() && args.contains("url") && args.at("url").is_string())
+                        {
+                            url = args.at("url").get<std::string>();
+                        }
+                        else if (args.is_string())
+                        {
+                            url = args.get<std::string>();
+                        }
+                        app->openDeepLink(url);
+                    }
+                });
+
             _addCommand(
                 "AddRange",
                 "Open the review tool and add a marker for the timeline "

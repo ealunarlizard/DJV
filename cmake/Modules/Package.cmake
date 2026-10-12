@@ -135,6 +135,13 @@ if(WIN32)
     # so that "djv -h" can print. It is not something to offer in a file dialog:
     # both appear as "djv", and the one that flashes a console is the wrong
     # answer. NoOpenWith keeps it out of the list.
+    #
+    # "djv" is the scheme of the review links on the sync server's portal
+    # (djv://session/<session>?server=<server>, see models::parseDeepLink).
+    # "URL Protocol" is what makes a key under Classes a scheme a browser may
+    # hand to a program. DJV also registers it for the user when it first
+    # runs and finds none (App::_deepLinkInit), for a build that was never
+    # installed; this one is for every user of the machine.
     set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
         WriteRegStr HKLM 'Software\\Classes\\.djvr' '' 'DJV.Review'
         WriteRegStr HKLM 'Software\\Classes\\DJV.Review' '' 'DJV Review Session'
@@ -144,6 +151,10 @@ if(WIN32)
         WriteRegStr HKLM 'Software\\Classes\\Applications\\djv.exe\\DefaultIcon' '' '\"$INSTDIR\\bin\\djv.exe\",0'
         WriteRegStr HKLM 'Software\\Classes\\Applications\\djv.exe\\shell\\open\\command' '' '\"$INSTDIR\\bin\\djv.exe\" \"%1\"'
 ${DJV_WINDOWS_SUPPORTED_TYPES_REG}        WriteRegStr HKLM 'Software\\Classes\\Applications\\djv.com' 'NoOpenWith' ''
+        WriteRegStr HKLM 'Software\\Classes\\djv' '' 'URL:DJV review link'
+        WriteRegStr HKLM 'Software\\Classes\\djv' 'URL Protocol' ''
+        WriteRegStr HKLM 'Software\\Classes\\djv\\DefaultIcon' '' '\"$INSTDIR\\bin\\djv.exe\",0'
+        WriteRegStr HKLM 'Software\\Classes\\djv\\shell\\open\\command' '' '\"$INSTDIR\\bin\\djv.exe\" \"%1\"'
         System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
     ")
     set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
@@ -152,6 +163,7 @@ ${DJV_WINDOWS_SUPPORTED_TYPES_REG}        WriteRegStr HKLM 'Software\\Classes\\A
         DeleteRegKey /ifempty HKLM 'Software\\Classes\\.djvr'
         DeleteRegKey HKLM 'Software\\Classes\\Applications\\djv.exe'
         DeleteRegKey HKLM 'Software\\Classes\\Applications\\djv.com'
+        DeleteRegKey HKLM 'Software\\Classes\\djv'
         System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
     ")
 

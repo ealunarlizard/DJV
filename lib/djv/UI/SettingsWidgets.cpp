@@ -5,6 +5,7 @@
 
 #include <djv/UI/PasswordEdit.h>
 
+#include <djv/Models/DeepLink.h>
 #include <djv/Models/LanModel.h>
 #include <djv/Models/NetworkDrive.h>
 #include <djv/Models/SyncModel.h>
@@ -35,6 +36,7 @@
 #include <ftk/UI/ScreenshotTag.h>
 #include <ftk/UI/ScrollWidget.h>
 #include <ftk/Core/Format.h>
+#include <ftk/Core/OS.h>
 
 namespace djv
 {
@@ -1120,6 +1122,8 @@ namespace djv
             std::shared_ptr<ftk::PushButton> testButton;
             std::shared_ptr<ftk::Label> serverStatusLabel;
             std::shared_ptr<ftk::Label> driveStatusLabel;
+            std::shared_ptr<ftk::Label> linksLabel;
+            std::shared_ptr<ftk::PushButton> linksButton;
             std::shared_ptr<ftk::FormLayout> layout;
 
             std::shared_ptr<ftk::Observer<models::SyncSettings> > settingsObserver;
@@ -1164,6 +1168,26 @@ namespace djv
                     line += word.size();
                 }
                 return out;
+            }
+
+            //! Which program the portal's review links open.
+            std::string linksText()
+            {
+                const std::filesystem::path handler = models::getDeepLinkHandler();
+                if (handler.empty())
+                {
+                    return "Not set up on this PC.";
+                }
+                std::error_code ec;
+                const std::filesystem::path exe = ftk::getExePath();
+                std::filesystem::path gui = exe;
+                gui.replace_extension(".exe");
+                if (std::filesystem::equivalent(handler, exe, ec) ||
+                    std::filesystem::equivalent(handler, gui, ec))
+                {
+                    return "Open this DJV.";
+                }
+                return wrapStatus(ftk::Format("Open {0}.").arg(ftk::fromFileSystem(handler)));
             }
         }
 
@@ -1241,6 +1265,21 @@ namespace djv
             p.serverStatusLabel = ftk::Label::create(context);
             p.driveStatusLabel = ftk::Label::create(context);
 
+            p.linksLabel = ftk::Label::create(context);
+            p.linksButton = ftk::PushButton::create(context, "Use this DJV");
+            p.linksButton->setTooltip(
+                "Make this DJV the one the \"review\" links of the server's "
+                "portal open. DJV sets itself up for them the first time it "
+                "runs; this is for a copy that was moved, or to choose this "
+                "one over another.");
+            auto linksLayout = ftk::HorizontalLayout::create(context);
+            linksLayout->setSpacingRole(ftk::SizeRole::SpacingSmall);
+            p.linksLabel->setParent(linksLayout);
+            p.linksButton->setParent(linksLayout);
+#if !defined(_WIN32)
+            p.linksButton->setEnabled(false);
+#endif // _WIN32
+
             p.layout = ftk::FormLayout::create(context);
             _setWidget(p.layout);
             p.layout->setSpacingRole(ftk::SizeRole::SpacingSmall);
@@ -1256,6 +1295,12 @@ namespace djv
             p.layout->addRow("", p.testButton);
             p.layout->addRow("Server:", p.serverStatusLabel);
             p.layout->addRow("Drive:", p.driveStatusLabel);
+            p.layout->addRow("Review links:", linksLayout);
+#if defined(_WIN32)
+            p.linksLabel->setText(linksText());
+#else // _WIN32
+            p.linksLabel->setText("On Windows only.");
+#endif // _WIN32
 
             _driveLettersUpdate();
 
@@ -1440,7 +1485,25 @@ namespace djv
                     _driveLettersUpdate();
                     p.lanModel->start();
                 });
+
+            p.linksButton->setClickedCallback(
+                [this]
+                {
+                    FTK_P();
+                    std::filesystem::path exe = ftk::getExePath();
+                    std::filesystem::path gui = exe;
+                    gui.replace_extension(".exe");
+                    std::error_code ec;
+                    std::string error;
+                    if (!models::registerDeepLinkHandler(std::filesystem::exists(gui, ec) ? gui : exe, true, &error))
+                    {
+                        p.linksLabel->setText(wrapStatus(error));
+                        return;
+                    }
+                    p.linksLabel->setText(linksText());
+                });
         }
+
 
         SyncSettingsWidget::SyncSettingsWidget() :
             _p(new Private)

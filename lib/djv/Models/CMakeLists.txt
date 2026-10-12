@@ -5,6 +5,7 @@ set(HEADERS
     ColorModel.h
     CommandsModel.h
     Credentials.h
+    DeepLink.h
     DrawModel.h
     Export.h
     FilesModel.h
@@ -34,6 +35,7 @@ set(SOURCE
     ColorModel.cpp
     CommandsModel.cpp
     Credentials.cpp
+    DeepLink.cpp
     DrawModel.cpp
     FilesModel.cpp
     LanModel.cpp
@@ -104,9 +106,11 @@ endif()
 
 # Mapping the studio's media share to a drive letter (NetworkDrive.cpp) is the
 # Windows networking API, WNetAddConnection2, which lives in mpr. The passwords
-# DJV keeps (Credentials.cpp) are in the Credential Manager, in advapi32.
+# DJV keeps (Credentials.cpp) are in the Credential Manager, in advapi32, as
+# are the registry and the security descriptors the review links
+# (DeepLink.cpp) use; letting the running DJV come to the front is user32.
 if(WIN32)
-    target_link_libraries(djvModels mpr advapi32)
+    target_link_libraries(djvModels mpr advapi32 user32)
 endif()
 set_property(GLOBAL APPEND PROPERTY LEGAL_NOTICES
     "cpp-httplib=${PROJECT_SOURCE_DIR}/deps/cpp-httplib/LICENSE")

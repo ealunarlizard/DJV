@@ -6,6 +6,7 @@
 #include <djv/ModelsTest/ModelsTestUtil.h>
 
 #include <djv/Models/Credentials.h>
+#include <djv/Models/DeepLink.h>
 #include <djv/Models/LanModel.h>
 #include <djv/Models/MarkersModel.h>
 #include <djv/Models/NetworkDrive.h>
@@ -106,6 +107,7 @@ namespace djv
             _lan();
             _merge();
             _connect();
+            _deepLink();
             _live();
         }
 
@@ -478,6 +480,18 @@ namespace djv
             FTK_CHECK("a.mov" == read.path);
             FTK_CHECK(read.pathAbsolute.empty());
             FTK_CHECK(read.name.empty());
+            FTK_CHECK(!read.compare.has_value());
+
+            // A second video to compare with the first, as the portal makes
+            // a session of two; one without a path is none.
+            media.compare = models::SyncMediaFile{ "shows/abc/sh010_v2.mov", "//nas/media/shows/abc/sh010_v2.mov", "sh010_v2.mov" };
+            const nlohmann::json withCompare = media;
+            FTK_CHECK(withCompare.contains("compare"));
+            FTK_CHECK(withCompare.get<models::SyncMedia>() == media);
+            nlohmann::json emptyCompare = withCompare;
+            emptyCompare["compare"] = { { "name", "nothing.mov" } };
+            FTK_CHECK(!emptyCompare.get<models::SyncMedia>().compare.has_value());
+            media.compare.reset();
 
             // A file inside the network media folder is named relative to
             // it, and found there through another machine's folder; one
@@ -724,6 +738,78 @@ namespace djv
             _print("  connect/disconnect -> ok");
         }
 
+        void SyncModelTest::_deepLink()
+        {
+            // The portal's review links.
+            auto link = models::parseDeepLink("djv://session/20261012-sh010-ab12?server=http%3A%2F%2F192.168.1.40%3A8877");
+            FTK_CHECK(link.has_value());
+            FTK_CHECK("20261012-sh010-ab12" == link->session);
+            FTK_CHECK("http://192.168.1.40:8877" == link->server);
+            // As browsers and Windows may pass them on: other slashes, the
+            // scheme in capitals, a trailing slash, more in the query.
+            link = models::parseDeepLink("DJV:session/sh010/?x=1&server=http://localhost:8877/#top");
+            FTK_CHECK(link.has_value());
+            FTK_CHECK("sh010" == link->session);
+            FTK_CHECK("http://localhost:8877/" == link->server);
+            std::string error;
+            for (const std::string& bad : {
+                "http://example.com/session/sh010",
+                "djv://open/sh010?server=http://a",
+                "djv://session/?server=http://a",
+                "djv://session/a%2F..%2Fb?server=http://a",
+                "djv://session/sh010",
+                "djv://session/sh010?server=https://a",
+                "djv://session/sh010?server=file:///c:/x" })
+            {
+                error.clear();
+                FTK_CHECK(!models::parseDeepLink(bad, &error).has_value());
+                FTK_CHECK(!error.empty());
+            }
+            FTK_CHECK(models::isDeepLink("djv://x"));
+            FTK_CHECK(!models::isDeepLink("C:/media/djv.mov"));
+
+            // The link must be for the server in the settings, however it is
+            // written.
+            FTK_CHECK(models::isSameSyncServer("http://192.168.1.40:8877", "HTTP://192.168.1.40:8877/"));
+            FTK_CHECK(models::isSameSyncServer("http://Server", "http://server:80"));
+            FTK_CHECK(!models::isSameSyncServer("http://192.168.1.40:8877", "http://192.168.1.41:8877"));
+            FTK_CHECK(!models::isSameSyncServer("http://192.168.1.40:8877", "http://192.168.1.40:8878"));
+            FTK_CHECK(!models::isSameSyncServer("http://localhost:8877", "http://127.0.0.1:8877"));
+
+#if defined(_WIN32)
+            // A second DJV hands the link to the first, on a pipe of its own
+            // here so as not to meet a DJV that is running.
+            const std::string pipe = "\\\\.\\pipe\\djv-link-test-" + models::generateId();
+            FTK_CHECK(!models::sendDeepLink("djv://session/nobody?server=http://a", pipe));
+            std::vector<std::string> received;
+            {
+                auto first = models::DeepLinkListener::create(_context, pipe);
+                FTK_CHECK(first->isListening());
+                first->setCallback([&received](const std::string& value) { received.push_back(value); });
+                // Only the first one listens.
+                auto second = models::DeepLinkListener::create(_context, pipe);
+                FTK_CHECK(!second->isListening());
+
+                const std::string sent = "djv://session/sh010?server=http%3A%2F%2F192.168.1.40%3A8877";
+                FTK_CHECK(models::sendDeepLink(sent, pipe));
+                FTK_CHECK(models::sendDeepLink(sent + "-again", pipe));
+                const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                while (received.size() < 2 && std::chrono::steady_clock::now() < end)
+                {
+                    _context->tick();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                FTK_CHECK(2 == received.size());
+                FTK_CHECK(sent == received[0]);
+                FTK_CHECK(sent + "-again" == received[1]);
+            }
+            // Gone with the listener.
+            FTK_CHECK(!models::sendDeepLink("djv://session/sh010?server=http://a", pipe));
+            _print(ftk::Format("  review links: handled by \"{0}\"").
+                arg(ftk::fromFileSystem(models::getDeepLinkHandler())));
+#endif // _WIN32
+        }
+
         void SyncModelTest::_live()
         {
             // Two people in one session, against a real server: given by
@@ -857,6 +943,12 @@ namespace djv
             FTK_CHECK(syncA->shareMedia());
             FTK_CHECK(waitFor([&] { return syncB->observeMedia()->get() == media; }));
             FTK_CHECK(syncA->observeMedia()->get() == media);
+
+            // And so does a second video to compare it with.
+            media.compare = models::SyncMediaFile{ "shows/sh010_v2.mov", std::string(), "sh010_v2.mov" };
+            syncA->setLocalMedia(media);
+            FTK_CHECK(syncA->shareMedia());
+            FTK_CHECK(waitFor([&] { return syncB->observeMedia()->get() == media; }));
 
             syncA->disconnect();
             syncB->disconnect();

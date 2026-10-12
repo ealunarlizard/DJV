@@ -30,6 +30,8 @@
 #include <djv/Models/AppInfoModel.h>
 #include <djv/Models/AudioModel.h>
 #include <djv/Models/ColorModel.h>
+#include <djv/Models/Credentials.h>
+#include <djv/Models/DeepLink.h>
 #include <djv/Models/DrawModel.h>
 #include <djv/Models/FilesModel.h>
 #include <djv/Models/Parse.h>
@@ -200,6 +202,13 @@ namespace djv
             //! The session token last found refused, so that DJV signs in
             //! again once for it rather than with every retry.
             std::string syncRefusedToken;
+            //! Takes the review links handed on by DJVs started for them.
+            std::shared_ptr<models::DeepLinkListener> deepLinkListener;
+            //! The review link DJV was started with, followed once the
+            //! window is up.
+            std::string deepLinkStartup;
+            //! The session of a review link waiting for a sign-in.
+            std::string deepLinkSession;
             std::shared_ptr<models::AnnotationsModel> annotationsModel;
             std::shared_ptr<models::DrawModel> drawModel;
             std::shared_ptr<ftk::ObservableList<int> > reviewMarkers;
@@ -773,7 +782,56 @@ namespace djv
                     ftk::LogType::Error);
                 return;
             }
+
+            // A second video is compared with the first, as "-compare" on
+            // the command line does: B is opened first, so that A, opened
+            // after it, is the current file.
+            std::filesystem::path bPath;
+            if (media->compare.has_value())
+            {
+                bool bExists = false;
+                bPath = models::resolveSyncMedia(
+                    media->compare.value(),
+                    ftk::toFileSystem(p.lanModel->observeMediaRoot()->get()),
+                    bExists);
+                if (!bExists)
+                {
+                    _context->log(
+                        "djv::app::App",
+                        ftk::Format("The sync session's second video \"{0}\" cannot be found at \"{1}\"; "
+                            "opening the first alone.").
+                            arg(media->compare->name).
+                            arg(ftk::fromFileSystem(bPath)),
+                        ftk::LogType::Error);
+                    bPath.clear();
+                }
+            }
+            if (!bPath.empty())
+            {
+                open(ftk::Path(ftk::fromFileSystem(bPath)));
+            }
             open(ftk::Path(ftk::fromFileSystem(path)));
+            if (!bPath.empty())
+            {
+                const auto& files = p.filesModel->getFiles();
+                const std::string b = ftk::Path(ftk::fromFileSystem(bPath)).get();
+                for (size_t i = 0; i < files.size(); ++i)
+                {
+                    if (files[i] && files[i]->path.get() == b)
+                    {
+                        // Side by side unless the person already compares
+                        // some other way.
+                        tl::CompareOptions options = p.filesModel->getCompareOptions();
+                        if (tl::Compare::None == options.compare || tl::Compare::B == options.compare)
+                        {
+                            options.compare = tl::Compare::Horizontal;
+                            p.filesModel->setCompareOptions(options);
+                        }
+                        p.filesModel->setB(static_cast<int>(i), true);
+                        break;
+                    }
+                }
+            }
         }
 
         std::filesystem::path App::resolveSyncMedia(bool& exists) const
@@ -797,11 +855,147 @@ namespace djv
             std::optional<models::SyncMedia> media;
             if (const auto& a = p.filesModel->getA())
             {
-                media = models::syncMediaFromPath(
-                    a->path.get(),
-                    ftk::toFileSystem(p.lanModel->observeMediaRoot()->get()));
+                const std::filesystem::path root = ftk::toFileSystem(p.lanModel->observeMediaRoot()->get());
+                media = models::syncMediaFromPath(a->path.get(), root);
+                // The file compared with it goes along, so that the session
+                // compares the same two.
+                const auto& active = p.filesModel->getActive();
+                if (active.size() > 1 && active[1] && active[1] != a)
+                {
+                    const models::SyncMedia b = models::syncMediaFromPath(active[1]->path.get(), root);
+                    media->compare = models::SyncMediaFile{ b.path, b.pathAbsolute, b.name };
+                }
             }
             p.syncModel->setLocalMedia(media);
+        }
+
+        void App::openDeepLink(const std::string& value)
+        {
+            FTK_P();
+            std::string error;
+            const auto link = models::parseDeepLink(value, &error);
+            if (!link.has_value())
+            {
+                _context->log("djv::app::App", error, ftk::LogType::Error);
+                return;
+            }
+            if (p.mainWindow)
+            {
+                p.mainWindow->raise();
+            }
+
+            // A web page must not be able to send this DJV, and the
+            // password it keeps, to another server: the link has to name
+            // the one in the settings.
+            const models::SyncSettings& sync = p.settingsModel->getSync();
+            if (!models::isSameSyncServer(link->server, sync.server))
+            {
+                _context->log(
+                    "djv::app::App",
+                    ftk::Format("The review link is for the sync server {0}, but this DJV uses {1}. "
+                        "Open the portal at {1}, or change the server in the Sync Server settings.").
+                        arg(link->server).
+                        arg(sync.server.empty() ? std::string("none") : sync.server),
+                    ftk::LogType::Error);
+                p.toolsModel->showSection("Settings", "SyncServer");
+                return;
+            }
+            p.deepLinkSession = link->session;
+            _context->log(
+                "djv::app::App",
+                ftk::Format("Opening the review session \"{0}\" from a link").arg(link->session));
+            _deepLinkContinue();
+        }
+
+        void App::_deepLinkContinue()
+        {
+            FTK_P();
+            if (p.deepLinkSession.empty())
+            {
+                return;
+            }
+            const models::LanAuth& auth = p.lanModel->observeAuth()->get();
+            switch (auth.state)
+            {
+            case models::LanAuthState::SignedIn:
+                break;
+            case models::LanAuthState::SigningIn:
+                // lanAuthObserver comes back here once it is done.
+                return;
+            default:
+            {
+                const models::SyncSettings& sync = p.settingsModel->getSync();
+                if (!sync.username.empty() &&
+                    !models::loadSyncPassword(sync.server, sync.username).empty() &&
+                    models::LanAuthState::Failed != auth.state)
+                {
+                    p.lanModel->start();
+                }
+                else
+                {
+                    _context->log(
+                        "djv::app::App",
+                        ftk::Format("Sign in to the sync server to open the session \"{0}\"; "
+                            "it opens once you have.").arg(p.deepLinkSession),
+                        ftk::LogType::Warning);
+                    p.toolsModel->showSection("Settings", "SyncServer");
+                }
+                return;
+            }
+            }
+
+            const std::string session = p.deepLinkSession;
+            p.deepLinkSession.clear();
+            // From an empty review: markers already open would otherwise be
+            // sent into the session (SyncMerger::snapshot()). The person is
+            // asked about unsaved changes first, as when closing a review.
+            confirmClose(
+                [this, session]
+                {
+                    FTK_P();
+                    _closeReview();
+                    p.syncAutoLoaded.reset();
+                    models::ReviewSync sync;
+                    sync.server = p.settingsModel->getSync().server;
+                    sync.session = session;
+                    connectSync(sync);
+                });
+        }
+
+        void App::_deepLinkInit()
+        {
+            FTK_P();
+            // DJV answers djv: links once it has run, wherever it was
+            // installed or built; an installed one registered itself
+            // already, and is left as it is.
+            // The console build answers for the application beside it, as in
+            // repairShellAssociations(): a link opens a window.
+            std::filesystem::path exe = ftk::getExePath();
+            if (exe.extension() == ".com")
+            {
+                std::filesystem::path gui = exe;
+                gui.replace_extension(".exe");
+                std::error_code ec;
+                if (std::filesystem::exists(gui, ec))
+                {
+                    exe = gui;
+                }
+            }
+            std::string error;
+            if (!exe.empty() && models::registerDeepLinkHandler(exe, false, &error))
+            {
+                _context->log("djv::app::App", "Registered DJV for review links (djv:)");
+            }
+            else if (!error.empty())
+            {
+                _context->log("djv::app::App", error, ftk::LogType::Warning);
+            }
+            p.deepLinkListener = models::DeepLinkListener::create(_context);
+            p.deepLinkListener->setCallback(
+                [this](const std::string& value)
+                {
+                    openDeepLink(value);
+                });
         }
 
         void App::_syncMediaUpdate(const std::optional<models::SyncMedia>& value)
@@ -2450,6 +2644,7 @@ namespace djv
             // Here rather than first: a run that only prints something and
             // exits has no business changing the user's file associations.
             repairShellAssociations(_context);
+            _deepLinkInit();
 
             _mainWindowInit();
 
@@ -3207,6 +3402,8 @@ namespace djv
                 [this](const std::vector<std::shared_ptr<models::FilesModelItem> >& value)
                 {
                     _activeUpdate(value);
+                    // B coming or going changes what a session would compare.
+                    _syncLocalMediaUpdate();
                 });
             p.markersObserver = ftk::ListObserver<models::ReviewMarker>::create(
                 p.markersModel->observeMarkers(),
@@ -3256,6 +3453,12 @@ namespace djv
                         sync.has_value())
                     {
                         _connectSync(sync.value());
+                    }
+                    // A review link that waited for the sign-in.
+                    if (models::LanAuthState::SignedIn == value.state &&
+                        !p.deepLinkSession.empty())
+                    {
+                        _deepLinkContinue();
                     }
                 });
             // A token the server no longer takes -- the admin gave the user
@@ -3555,6 +3758,15 @@ namespace djv
                 ftk::PathOptions pathOptions;
                 pathOptions.seqMaxDigits = p.settingsModel->getImageSeq().maxDigits;
 
+                // A review link from the server's portal: followed once the
+                // window is up and the sign-in under way (see
+                // _mainWindowInit()).
+                if (models::isDeepLink(p.cmdLine.inputs->getList().front()))
+                {
+                    p.deepLinkStartup = p.cmdLine.inputs->getList().front();
+                    return;
+                }
+
                 // A review (".djvr") describes an entire session; open it and
                 // ignore any other inputs.
                 {
@@ -3772,6 +3984,12 @@ namespace djv
             {
                 p.lanModel->mapDrive();
             }
+            if (!p.deepLinkStartup.empty())
+            {
+                openDeepLink(p.deepLinkStartup);
+                p.deepLinkStartup.clear();
+            }
+
 
             // Apply any view state from a review opened before the window existed
             // (e.g. a ".djvr" passed on the command line).

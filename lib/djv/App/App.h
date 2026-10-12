@@ -162,6 +162,14 @@ namespace djv
             //! one that was expected.
             std::filesystem::path resolveSyncMedia(bool& exists) const;
 
+            //! Open a review link from the server's portal
+            //! (djv://session/<session>?server=<server>): close the review,
+            //! join the session, and open its videos. A link for another
+            //! server than the settings' is refused; without a sign-in, the
+            //! Sync Server settings are shown, and the link is followed once
+            //! signed in. Problems are reported in the log.
+            void openDeepLink(const std::string&);
+
             //! Observe the frames that carry a note or a drawing, sorted and
             //! deduplicated.
             //!
@@ -406,6 +414,9 @@ namespace djv
                 const std::filesystem::path& reviewPath);
             void _closeReview();
             bool _connectSync(const models::ReviewSync&);
+            void _deepLinkContinue();
+            void _deepLinkInit();
+
             void _syncLocalMediaUpdate();
             void _syncMediaUpdate(const std::optional<models::SyncMedia>&);
             //! Where the previous run's log was moved to; see ftk::App.

@@ -30,6 +30,7 @@ namespace djv
             void _lan();
             void _merge();
             void _connect();
+            void _deepLink();
             void _live();
         };
     }

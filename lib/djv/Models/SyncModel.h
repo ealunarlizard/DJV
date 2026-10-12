@@ -185,6 +185,18 @@ namespace djv
             const char*,
             size_t);
 
+        //! A second file of a sync session's media, shown as B beside the
+        //! first: a session made on the server's portal of two videos, to
+        //! compare them. Its paths are kept as SyncMedia's are.
+        struct DJV_MODELS_API_TYPE SyncMediaFile
+        {
+            std::string path;
+            std::string pathAbsolute;
+            std::string name;
+
+            bool operator == (const SyncMediaFile&) const = default;
+        };
+
         //! The media a sync session's markers are about: a file on network
         //! storage that every reviewer can reach, though each machine may
         //! reach it under a different name (a UNC share on Windows, a mount
@@ -209,6 +221,10 @@ namespace djv
             //! Who shared it (see reviewAuthor()).
             std::string sharedBy;
 
+            //! The file compared with it, when there is one. The markers
+            //! belong to the first file.
+            std::optional<SyncMediaFile> compare;
+
             bool operator == (const SyncMedia&) const = default;
         };
 
@@ -226,6 +242,14 @@ namespace djv
             const SyncMedia&,
             const std::filesystem::path& mediaRoot,
             bool& exists);
+
+        //! Find the compared file of a sync session on this machine, as
+        //! resolveSyncMedia() finds the first.
+        DJV_MODELS_API std::filesystem::path resolveSyncMedia(
+            const SyncMediaFile&,
+            const std::filesystem::path& mediaRoot,
+            bool& exists);
+
 
         DJV_MODELS_API void to_json(nlohmann::json&, const SyncMedia&);
 

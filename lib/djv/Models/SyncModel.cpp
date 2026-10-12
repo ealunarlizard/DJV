@@ -207,6 +207,17 @@ namespace djv
                 exists);
         }
 
+        std::filesystem::path resolveSyncMedia(
+            const SyncMediaFile& file,
+            const std::filesystem::path& mediaRoot,
+            bool& exists)
+        {
+            SyncMedia media;
+            media.path = file.path;
+            media.pathAbsolute = file.pathAbsolute;
+            return resolveSyncMedia(media, mediaRoot, exists);
+        }
+
         void to_json(nlohmann::json& json, const SyncMedia& in)
         {
             json = nlohmann::json::object();
@@ -214,19 +225,40 @@ namespace djv
             json["pathAbsolute"] = in.pathAbsolute;
             json["name"] = in.name;
             json["sharedBy"] = in.sharedBy;
+            if (in.compare.has_value())
+            {
+                json["compare"] = {
+                    { "path", in.compare->path },
+                    { "pathAbsolute", in.compare->pathAbsolute },
+                    { "name", in.compare->name }
+                };
+            }
         }
 
         void from_json(const nlohmann::json& json, SyncMedia& out)
         {
-            auto text = [&json](const char* key)
+            auto text = [](const nlohmann::json& json, const char* key)
             {
                 const auto i = json.find(key);
                 return i != json.end() && i->is_string() ? i->get<std::string>() : std::string();
             };
-            out.path = text("path");
-            out.pathAbsolute = text("pathAbsolute");
-            out.name = text("name");
-            out.sharedBy = text("sharedBy");
+            out.path = text(json, "path");
+            out.pathAbsolute = text(json, "pathAbsolute");
+            out.name = text(json, "name");
+            out.sharedBy = text(json, "sharedBy");
+            out.compare.reset();
+            const auto i = json.find("compare");
+            if (i != json.end() && i->is_object())
+            {
+                SyncMediaFile file;
+                file.path = text(*i, "path");
+                file.pathAbsolute = text(*i, "pathAbsolute");
+                file.name = text(*i, "name");
+                if (!file.path.empty() || !file.pathAbsolute.empty())
+                {
+                    out.compare = file;
+                }
+            }
         }
 
         namespace
@@ -1064,12 +1096,14 @@ namespace djv
                             arg(errorMessage(result)));
                     }
 
+                    bool removed = false;
                     if (ok)
                     {
                         retry = retryMin;
                         status(SyncState::Connected, std::string());
                         SyncEventStream stream;
                         bool resync = false;
+
                         client.Get(
                             ftk::Format("{0}/events?since={1}").arg(base).arg(revision),
                             headers,
@@ -1082,9 +1116,15 @@ namespace djv
                                         Inbound msg;
                                         msg.type = Inbound::Type::Event;
                                         msg.json = nlohmann::json::parse(event);
-                                        if ("reset" == msg.json.value("type", std::string()))
+                                        const std::string type = msg.json.value("type", std::string());
+                                        if ("reset" == type)
                                         {
                                             resync = true;
+                                        }
+                                        else if ("removed" == type)
+                                        {
+                                            removed = true;
+                                            continue;
                                         }
                                         push(std::move(msg));
                                     }
@@ -1092,8 +1132,25 @@ namespace djv
                                     {}
                                 }
                                 std::unique_lock<std::mutex> lock(shared->mutex);
-                                return shared->running && !shared->resync && !resync;
+                                return shared->running && !shared->resync && !resync && !removed;
                             });
+                    }
+                    if (removed)
+                    {
+                        // The session was deleted on the server, or this
+                        // user taken out of it. Both threads stop: writing
+                        // to it again would make a new, empty session of
+                        // the same name.
+                        status(SyncState::Error, ftk::Format(
+                            "The session \"{0}\" was deleted on the server, or you are no longer one of "
+                            "its people. Leave it, or join another.").arg(session));
+                        {
+                            std::unique_lock<std::mutex> lock(shared->mutex);
+                            shared->running = false;
+                            shared->streamClient = nullptr;
+                        }
+                        shared->cv.notify_all();
+                        break;
                     }
 
                     bool again = false;
