@@ -20,6 +20,11 @@ Changes:
   with the account the server gives it. The sync settings have a section of
   their own, Sync Server. The server is packaged for Docker. See the Studio
   network page.
+* The sync server's review portal: in a browser, with the same sign-in,
+  upload videos to the media share, make review sessions of one or two
+  videos for the people you choose, and open one in DJV with its "review"
+  link. A session of two videos opens them as A and B, side by side. DJV
+  registers itself for the links, and a DJV already running takes them.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 

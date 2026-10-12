@@ -15,10 +15,16 @@ Windows account to map it with, and DJV maps it to a drive. The *Studio
 network* page of the DJV documentation (`docs/lan-setup.html`) explains how to
 set one up.
 
-The server is a few files: `server.js`, `config.js`, `users.js` and
-`admin.html`. It needs nothing beyond Node.js 22.13 or newer, which has SQLite
-built in. For the studio it runs in Docker. The deployment is in
-[`deploy/`](deploy/) and its guide is in `docs/lan/docker-deploy.md`.
+The server's address opens the **review portal** (`portal.html`), where the
+same people sign in to upload videos to the media share, make review
+sessions of one or two of them for the people they choose, and open a
+session in DJV with its *review* link. Its guide is `docs/lan/portal.md`.
+
+The server is a few files: `server.js`, `config.js`, `users.js`, `media.js`,
+`portal.html` and `admin.html`. It needs nothing beyond Node.js 22.13 or
+newer, which has SQLite built in. For the studio it runs in Docker. The
+deployment is in [`deploy/`](deploy/) and its guide is in
+`docs/lan/docker-deploy.md`.
 
 ## Running
 
@@ -60,6 +66,7 @@ SQLite module is still experimental.
 | `SHARE_PASSWORD_FILE` | (none) | A file holding the password of the media share's account. |
 | `SHARE_PASSWORD` | (none) | The same password, given directly, when there is no file. |
 | `DB_EXCLUSIVE` | off | `1` to lock the database exclusively. Needed when `DATA_DIR` is a Windows folder mounted into a container (see *Storage*). |
+| `MEDIA_DIR` | (none) | The folder the media share shares. The portal lists the videos in it and uploads to it. Without it, the portal has no videos. The image sets `/media`. |
 
 At every start, the server makes sure `lldjv` exists and has the root
 password. A server with no `lldjv` and no root password does not start. A file
@@ -99,6 +106,12 @@ file that cannot be read stops the server from starting. Fields starting with
 LAN server (`clients`, `requireRegistration`, `adminToken`) are ignored too,
 and dropped the next time the file is written.
 
+## Portal
+
+Open `http://<server>:8877` and sign in as any user. See
+`docs/lan/portal.md`. The portal keeps its session token for the browser tab
+only.
+
 ## Admin page
 
 Open `http://<server>:8877/admin` and sign in as `lldjv`. The page lets you:
@@ -107,7 +120,7 @@ Open `http://<server>:8877/admin` and sign in as `lldjv`. The page lets you:
 - see when each user last signed in, from which PC, and with which DJV
   version;
 - see who is connected to which session now;
-- see the sessions;
+- see every session, with its date, videos and people;
 - change the server settings;
 - download a backup of the database.
 
@@ -187,6 +200,20 @@ request after that sends `Authorization: Bearer <token>`.
 
 `health`, `login` and `hello` need no token.
 
+### Who sees a session
+
+A session is for the people it was made for (`members`), whoever made it
+(`createdBy`), and `lldjv`. For anyone else, every request about it gets 403
+with `"code": "not-member"`, and `GET /sessions` leaves it out.
+
+- A name that nobody has used yet becomes a session the first time someone
+  opens it, as DJV does when someone types a new name. That user is its
+  creator and only member.
+- A session made before server 2.1 has no members (`members: null`), and is
+  open to every user.
+- Only the creator and `lldjv` change or delete a session (403
+  `not-owner`).
+
 Every request also says which DJV it comes from, for the admin page:
 
 ```
@@ -200,18 +227,56 @@ X-DJV-Version: 3.7.5
 | `POST /login` | `{ "username", "password" }` | see above |
 | `POST /logout` | | `{ "ok": true }` |
 | `GET /hello` | | `{ "name", "serverVersion", "djvVersion", "authRequired": true, "signedIn" }`, plus, once signed in, `"user": {...}` and `"storage": { "unc", "user", "password" }` |
-| `GET /sessions` | | `{ "sessions": [{ "session", "rev", "markers", "clients", "media" }] }`, where `media` is the file's name or `null` |
+| `GET /sessions` | | `{ "sessions": [...] }`, the sessions the user may see, newest first (see below) |
+| `POST /sessions` | `{ "description"?, "date"?, "members"?, "videos": [a, b?] }` | The new session, as in the list. The server names it `YYYYMMDD-<description>-<4 random>`. |
+| `PUT /sessions/<session>/info` | any of `description`, `date`, `members`, `videos` | The session, as in the list. New videos are a media event. |
+| `DELETE /sessions/<session>` | | `{ "ok": true }`. The streams of the session get a `removed` event. |
 | `GET /sessions/<session>` | | `{ "session", "rev", "media": {...} \| null, "markers": [...], "deleted": [ids] }` |
 | `PUT /sessions/<session>/markers/<id>` | `{ "clientId", "marker" }` | `{ "rev" }` |
 | `DELETE /sessions/<session>/markers/<id>?clientId=<id>` | | `{ "rev" }` |
 | `PUT /sessions/<session>/media` | `{ "clientId", "media": { "path", "pathAbsolute", "name", "sharedBy" } }` | `{ "rev" }` |
 | `DELETE /sessions/<session>/media?clientId=<id>` | | `{ "rev" }` |
 | `GET /sessions/<session>/events?since=<rev>` | | Server-sent events |
+| `GET /people` | | `{ "people": [{ "username", "name" }] }`, to invite |
+| `GET /videos` | | `{ "enabled", "videos": [{ "path", "name", "folder", "size", "modified" }], "folders", "free", "uploading" }` |
+| `DELETE /videos?path=<path>[&force=1]` | | `{ "ok": true }`. Only `lldjv`. 409 with `"sessions"` while sessions use the file, unless `force=1`. |
+| `POST /uploads` | `{ "path", "size" }` | `{ "id", "path", "size", "received", "chunkSize" }`. The same user starting the same file again gets the unfinished upload back. 409 for a name that is taken, 507 for too little space. |
+| `PUT /uploads/<id>?offset=<received>` | the next piece, as raw bytes, at most `chunkSize` | `{ "received", "done" }`, and `"video"` when it is whole. 409 with `"received"` for a piece out of order. |
+| `GET /uploads` | | `{ "uploads": [...] }`, the user's unfinished ones |
+| `DELETE /uploads/<id>` | | `{ "ok": true }` |
+
+An item of `GET /sessions`:
+
+```json
+{
+  "session": "20261012-sh010-lighting-k7qm", "rev": 12, "markers": 4, "clients": 1,
+  "media": "v001.mov",
+  "description": "SH010 lighting", "date": "2026-10-12", "createdBy": "anna",
+  "members": ["anna", "ben"], "open": false, "canEdit": true,
+  "videos": [{ "path", "pathAbsolute", "name" }, { ... }],
+  "connected": ["ben"], "created": "...", "updated": "..."
+}
+```
 
 Session names and marker identifiers are letters, digits, `.`, `_` and `-`,
 up to 128 of them. User names follow the same rule, up to 64 of them. A
 session that has never been written to is empty. The media's fields are text
 of up to 4096 characters, and either `path` or `pathAbsolute` must be given.
+
+The media can have a second file, `"compare": { "path", "pathAbsolute",
+"name" }`, which DJV opens as B beside the first. A session the portal makes
+of two videos has it.
+
+A path in the media folder is relative, with forward slashes, and must be a
+good Windows path:
+
+- no `< > : " | ? * \`;
+- no name starting with a dot, or ending with a dot or a space;
+- no device names such as `CON`;
+- at most 200 characters.
+
+Only video files are uploaded and listed: `.mov .mp4 .m4v .mxf .mkv .avi
+.webm .mpg .mpeg .ts .y4m .wav`.
 
 The data of each event is JSON:
 
@@ -220,6 +285,7 @@ The data of each event is JSON:
 { "type": "delete", "rev": 13, "clientId": "...", "user": "anna", "id": "..." }
 { "type": "media",  "rev": 14, "clientId": "...", "user": "anna", "media": { ... } | null }
 { "type": "reset",  "rev": 14 }
+{ "type": "removed", "rev": 14 }
 ```
 
 `clientId` identifies the connection that made the change, so a client can
@@ -230,6 +296,10 @@ DJV connects, because two DJVs can share a user.
 
 `reset` means the changes after `since` are no longer kept: read the session
 again, and follow it from there.
+
+`removed` means the session was deleted, or the user is no longer one of its
+people. The stream ends, and DJV stops sending to the session, since a write
+to the name would start a new session.
 
 A comment is written every 15 seconds to keep the stream open.
 
@@ -258,7 +328,18 @@ session it holds:
 - the revision and the media;
 - the markers;
 - the deleted identifiers;
-- the last 1000 changes.
+- the last 1000 changes;
+- who it is for (`session_info`: the description, date, creator and
+  members).
+
+It also holds the unfinished uploads (`uploads`), so that one carries on
+after a restart. Their data waits in `MEDIA_DIR/.djv-uploads`, and is moved
+into place once whole. Uploads nobody carried on with for a week are dropped
+at start.
+
+The database's layout is version 3 (`PRAGMA user_version`). Version 3 only
+adds tables, so a database of an older server is brought up to date when the
+server starts.
 
 The same database holds the session tokens, stored only as SHA-256 hashes. A
 change is written before the server answers the client that sent it, so a

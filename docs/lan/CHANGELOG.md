@@ -9,6 +9,44 @@ versions are this work's own (`lan-X.Y.Z`): the DJV version it is built on
 is given with each one, and the user-facing DJV changes are also in the
 root `ChangeLog.md`, under the DJV version.
 
+## [lan-0.3.0] - Unreleased
+
+Built on DJV 3.7.5-dev, with sync server 2.1.0 (`server/package.json`).
+Branch `feature/lan-server`. A DJV of lan-0.2.0 still syncs notes with this
+server; the review links and two-video sessions need this DJV.
+
+### Added
+
+- The review portal, at the server's address, used with the same accounts
+  as DJV (`server/portal.html`, `docs/lan/portal.md`). (CR-020)
+- Uploading videos to the media share from the portal, in resumable 32 MB
+  pieces; the list of videos is the shared folder's. Only lldjv deletes
+  videos. (CR-018)
+- `MEDIA_DIR`, the shared folder mounted read-write into the container as
+  `/media` from `DJV_MEDIA_DIR` in `.env`, which `share-setup.ps1` sets.
+  (CR-018)
+- Sessions with a date, a description, a creator and the people they are
+  for; made on the portal with a name the server chooses, edited or deleted
+  by the creator and lldjv. (CR-019)
+- Sessions of two videos: the media's `compare` file, opened in DJV as B,
+  side by side. (CR-021)
+- Review links, `djv://session/<session>?server=<server>`: DJV registers
+  itself for them, a running DJV takes them from a new one, and the link
+  opens the session with its videos. The command `Review/SyncOpenLink`, and
+  **Review links** in the Sync Server settings. (CR-022)
+
+### Changed
+
+- A session is seen and joined only by its people, its creator and lldjv
+  (403 `not-member`). A name first opened from DJV is that user's session.
+  Sessions of server 2.0 stay open to everyone. (CR-019)
+- `GET /api/sessions` lists the user's sessions, newest first, with their
+  date, description, people, videos and who is connected. (CR-019)
+- The database layout is version 3: `session_info` and `uploads`. (CR-018,
+  CR-019)
+- A deleted session, or one a user was taken out of, ends its streams with
+  a `removed` event; DJV stops sending to it. (CR-019)
+
 ## [lan-0.2.0] - Unreleased
 
 Built on DJV 3.7.5-dev, with sync server 2.0.0 (`server/package.json`).

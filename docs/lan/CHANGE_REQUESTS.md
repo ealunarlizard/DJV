@@ -65,6 +65,11 @@ assets.
 | [CR-015](#cr-015-share-credentials-from-the-server) | Share credentials from the server | Implemented (LAN check pending) | `5f5a3b75b` |
 | [CR-016](#cr-016-sharing-the-media-folder) | Sharing the media folder | Implemented (share check pending) | `082518945`, `bc741ef6a` |
 | [CR-017](#cr-017-notes-signed-by-the-signed-in-user) | Notes signed by the signed-in user | Proposed | |
+| [CR-018](#cr-018-uploading-videos-to-the-media-share) | Uploading videos to the media share | Implemented | `9dab3ba4a` |
+| [CR-019](#cr-019-sessions-for-the-people-they-are-made-for) | Sessions for the people they are made for | Implemented | `9dab3ba4a`, `1335c3a2a` |
+| [CR-020](#cr-020-review-portal) | Review portal | Implemented (browser check pending) | `9dab3ba4a` |
+| [CR-021](#cr-021-sessions-of-two-videos-compared) | Sessions of two videos, compared | Implemented | `9dab3ba4a`, `1335c3a2a` |
+| [CR-022](#cr-022-review-links-that-open-djv) | Review links that open DJV | Implemented (browser check pending) | `1335c3a2a` |
 
 ## CR-001: Live marker sync
 
@@ -354,6 +359,9 @@ implemented.
 section lists the server's sessions, with their media, to pick from.
 `GET /api/sessions` already gives the list.
 
+The portal (CR-020) lists the sessions in a browser, and its review links
+(CR-022) open one in DJV; a list inside DJV is still open.
+
 ## CR-010: Encrypted connections
 
 | | |
@@ -596,3 +604,187 @@ file.
 **Description.** A marker's author is the Windows account name of the PC
 (`reviewAuthor()`). With people signing in, it could be the signed-in user's
 name instead, so that notes read the same whichever PC they were written on.
+
+## CR-018: Uploading videos to the media share
+
+| | |
+|---|---|
+| **Status** | Implemented |
+| **Requested** | 2026-10-12 |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `9dab3ba4a` |
+
+**Description.** Reviewers put a video on the media share from their own
+PC, through the portal, rather than copying it onto the dev server by hand.
+The server must be able to write to the shared folder, which the Docker
+configuration has to allow.
+
+**Acceptance criteria.**
+1. Any signed-in user can upload a video from the browser, into the media
+   folder or a folder inside it.
+2. Files of many gigabytes upload in resumable pieces. A dropped
+   connection, a reload of the page, or a restart of the server costs one
+   piece, not the whole file.
+3. A file is listed only when it is whole. It never replaces a file of the
+   same name, whatever the case of the letters.
+4. The list of videos is the folder's content, as DJV sees it.
+5. Only lldjv can delete videos, and is warned about sessions that use one.
+6. The share itself stays read-only for the account DJV maps it with.
+
+**Implementation.**
+- `server/media.js` checks that a path can live on a Windows share, lists
+  the videos, and reports the free space.
+- Uploads use `POST /api/uploads`, `PUT /api/uploads/<id>?offset=`,
+  `DELETE` and `GET`:
+  - each 32 MB piece is written in place into
+    `MEDIA_DIR/.djv-uploads/<id>.part`;
+  - the `uploads` table tracks how much has arrived;
+  - the finished file is linked into place.
+- Videos use `GET /api/videos`, plus `DELETE /api/videos?path=` for lldjv.
+- Docker: `MEDIA_DIR=/media` is bound read-write to `DJV_MEDIA_DIR`.
+  `share-setup.ps1` sets that in `.env` to the folder it shares.
+
+**Verified.**
+- Criteria 1 to 5: `server/test/portal.test.js` covers the order of pieces,
+  resuming across a restart, a name in another case, cancelling, and the
+  right to delete.
+- Criterion 1 in Docker: a script uploaded a 70 MB file, in three pieces, to
+  the container on this PC, and it landed in the Windows folder.
+- Not yet checked:
+  - uploading a real video from a browser;
+  - the dev server.
+
+## CR-019: Sessions for the people they are made for
+
+| | |
+|---|---|
+| **Status** | Implemented |
+| **Requested** | 2026-10-12 |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `9dab3ba4a`, `1335c3a2a` |
+
+**Description.** A session has a date, a description and the people it is
+for. Only those people, the creator and lldjv can see it. Anyone can make
+one, and session names never clash.
+
+**Acceptance criteria.**
+1. The server names each session made on the portal, and the names never
+   clash.
+2. Users see and join only the sessions they belong to. Anyone else is
+   refused with 403 `not-member`, in the portal and in DJV.
+3. A name typed in DJV that nobody has used yet becomes that user's
+   session. Only they can open it until they invite others.
+4. Only the creator and lldjv can change or delete a session. Deleting it
+   tells the DJVs in it, which leave it rather than create it again.
+5. Sessions from a server before 2.1 stay open to everyone.
+
+**Implementation.**
+- The server:
+  - the `session_info` table (schema 3);
+  - `POST /api/sessions`, `PUT /api/sessions/<s>/info` and
+    `DELETE /api/sessions/<s>`;
+  - the `removed` event;
+  - `GET /api/people`.
+- DJV: a `removed` event ends the connection with a message
+  (`SyncModel.cpp`).
+
+**Verified.**
+- `server/test/portal.test.js` covers criteria 1 to 5, including the
+  database migration.
+- The container on this PC kept the 2.0 sessions, open to everyone.
+
+## CR-020: Review portal
+
+| | |
+|---|---|
+| **Status** | Implemented (browser check pending) |
+| **Requested** | 2026-10-12 |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `9dab3ba4a` |
+
+**Description.** A web page on the sync server, used with the same accounts
+as DJV. It is for uploading videos, seeing the sessions with their date,
+description and people, and making new sessions of one or two videos.
+
+**Acceptance criteria.**
+1. The server's address opens the portal, and anyone with a DJV account can
+   sign in.
+2. It has three tabs, Sessions, New session and Videos, as CR-018, CR-019
+   and CR-021 describe.
+3. Each session has a **review** link (CR-022).
+
+**Implementation.**
+- `server/portal.html` is one self-contained page, served at `/` and
+  `/portal`.
+- The admin page's session list shows the same fields.
+- The guide is `docs/lan/portal.md`.
+
+**Verified.**
+- A test checks that the page is served.
+- The tests cover the requests the page makes.
+- Not yet checked: clicking through it in a browser.
+
+## CR-021: Sessions of two videos, compared
+
+| | |
+|---|---|
+| **Status** | Implemented |
+| **Requested** | 2026-10-12 |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `9dab3ba4a`, `1335c3a2a` |
+
+**Description.** DJV opens a session made of two videos as A and B,
+compared.
+
+**Acceptance criteria.**
+1. The session's media includes the second video as `compare`.
+2. DJV opens B and A, and shows them side by side unless the person has
+   chosen another way to compare.
+3. A DJV that shares its media also shares the B file it is comparing.
+4. If B is missing, DJV reports it and opens A alone.
+
+**Implementation.**
+- `SyncMediaFile` and `SyncMedia::compare` (`SyncModel.h`).
+- The server's `checkMedia`.
+- `App::loadSyncMedia` and `App::_syncLocalMediaUpdate`.
+
+**Verified.**
+- `SyncModelTest` checks the JSON round trip.
+- The live test shares a compare file between two DJVs through the
+  container.
+- No test covers opening the two in the player.
+
+## CR-022: Review links that open DJV
+
+| | |
+|---|---|
+| **Status** | Implemented (browser check pending) |
+| **Requested** | 2026-10-12 |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `1335c3a2a` |
+
+**Description.** Clicking the portal's **review** link opens DJV on that
+PC, signed in, in that session, with its videos loaded. If DJV is already
+running, the running copy takes the link instead of a new one starting.
+
+**Acceptance criteria.**
+1. `djv://session/<session>?server=<server>` starts DJV. DJV is registered
+   for djv: links in two ways:
+   - the installer registers it for the whole machine;
+   - DJV registers itself for the user when no handler is registered.
+2. A running DJV takes the link from the new one, which exits. Only the same
+   Windows user can hand it a link.
+3. DJV refuses a link for any server other than the one in its settings.
+   This stops a web page from sending DJV, and its password, somewhere
+   else.
+4. If DJV is not signed in, it shows the Sync Server settings, and opens the
+   session once the user has signed in.
+5. DJV asks about unsaved review changes before it closes the review.
+
+**Implementation.**
+- `lib/djv/Models/DeepLink.h/.cpp`: parsing, the pipe, and the registry.
+- `bin/djv/main.cpp`.
+- `App::openDeepLink`, and the command `Review/SyncOpenLink`.
+- The NSIS keys in `cmake/Modules/Package.cmake`.
+- **Review links** in the Sync Server settings.
+
+**Verified.**
+- `SyncModelTest` checks the parsing, the server matching, and the
+  hand-over of two links through a test pipe of its own.
+- Not yet checked: clicking a link in a browser, with DJV closed and with
+  it running.

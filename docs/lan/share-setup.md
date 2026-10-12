@@ -65,6 +65,10 @@ It:
    the administrators, so media can still be added from the server itself.
 4. Turns on Windows' *File and Printer Sharing* firewall rules, and opens TCP
    8877 for the sync server. Both apply to private and domain networks only.
+5. Writes `DJV_MEDIA_DIR=D:\Media` into the sync server's `.env`, so that its
+   portal uploads videos into the folder. The share stays read-only: the
+   server writes to the folder from its container, not through the share.
+   Restart the server for it to take effect.
 
 At the end it prints the UNC path to put on the admin page.
 

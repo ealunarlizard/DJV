@@ -207,6 +207,23 @@ The review markers (`MarkersModel`) can be shared live through
     refuses a token.
   - `ui::PasswordEdit` is the masked field: ftk's `LineEdit` has no
     password mode, and keeps undo history and copy.
+  - The review portal (`server/portal.html`, served at `/`) uses the same
+    sign-in. Videos come from `MEDIA_DIR` (`server/media.js`, which keeps
+    paths valid on Windows), and are uploaded in pieces through
+    `/api/uploads` (the `uploads` table). Sessions have a `session_info`
+    row (schema 3): description, date, creator, members. Only those, and
+    `lldjv`, may see or join one (403 `not-member`); a name with no row is
+    claimed by its first user, and one from before 2.1 is open to all.
+    Deleting a session sends `removed` on its streams, and DJV stops.
+  - `SyncMedia::compare` is a session's second video, opened as B by
+    `App::loadSyncMedia`.
+  - Review links, `djv://session/<s>?server=<url>`: `models::DeepLink`
+    parses them, registers DJV for them in HKCU (the installer in HKLM),
+    and passes them between DJVs on a named pipe for the Windows user
+    (`bin/djv/main.cpp` hands a link on and exits). `App::openDeepLink`
+    refuses another server than the settings', waits for the sign-in, and
+    closes the review (`confirmClose`) before joining, so that its markers
+    do not go into the session.
 - The `.djvr` `sync` section (`ReviewSync`) stores the server and session.
   `App` must disconnect before replacing or clearing the markers (see
   `_applyReview` and `_closeReview`). Otherwise the server would receive

@@ -65,7 +65,7 @@ foreach ($file in 'docker-compose.yml', 'start.ps1', 'stop.ps1', 'backup.ps1', '
 
 $docs = Join-Path $stage 'docs'
 New-Item -ItemType Directory -Path $docs | Out-Null
-foreach ($file in 'docker-deploy.md', 'share-setup.md') {
+foreach ($file in 'docker-deploy.md', 'share-setup.md', 'portal.md') {
     Copy-Item (Join-Path $PSScriptRoot "..\docs\lan\$file") $docs
 }
 
