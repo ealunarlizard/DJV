@@ -69,7 +69,8 @@ assets.
 | [CR-019](#cr-019-sessions-for-the-people-they-are-made-for) | Sessions for the people they are made for | Implemented | `9dab3ba4a`, `1335c3a2a` |
 | [CR-020](#cr-020-review-portal) | Review portal | Implemented (browser check pending) | `9dab3ba4a` |
 | [CR-021](#cr-021-sessions-of-two-videos-compared) | Sessions of two videos, compared | Implemented | `9dab3ba4a`, `1335c3a2a` |
-| [CR-022](#cr-022-review-links-that-open-djv) | Review links that open DJV | Implemented (browser check pending) | `1335c3a2a` |
+| [CR-022](#cr-022-review-links-that-open-djv) | Review links that open DJV | Implemented | `1335c3a2a`, `486f0dd19` |
+| [CR-023](#cr-023-review-links-under-another-address-autoconnect-and-their-log) | Review links under another address, autoConnect, and their log | Implemented | `b46bac5ab`, `486f0dd19` |
 
 ## CR-001: Live marker sync
 
@@ -754,9 +755,9 @@ compared.
 
 | | |
 |---|---|
-| **Status** | Implemented (browser check pending) |
+| **Status** | Implemented |
 | **Requested** | 2026-10-12 |
-| **Implemented** | 2026-10-12, `feature/lan-server`, `1335c3a2a` |
+| **Implemented** | 2026-10-12, `feature/lan-server`, `1335c3a2a`; fixed by CR-023 |
 
 **Description.** Clicking the portal's **review** link opens DJV on that
 PC, signed in, in that session, with its videos loaded. If DJV is already
@@ -771,7 +772,8 @@ running, the running copy takes the link instead of a new one starting.
    Windows user can hand it a link.
 3. DJV refuses a link for any server other than the one in its settings.
    This stops a web page from sending DJV, and its password, somewhere
-   else.
+   else. (CR-023 tells the same server under another address from another
+   server.)
 4. If DJV is not signed in, it shows the Sync Server settings, and opens the
    session once the user has signed in.
 5. DJV asks about unsaved review changes before it closes the review.
@@ -786,5 +788,96 @@ running, the running copy takes the link instead of a new one starting.
 **Verified.**
 - `SyncModelTest` checks the parsing, the server matching, and the
   hand-over of two links through a test pipe of its own.
-- Not yet checked: clicking a link in a browser, with DJV closed and with
-  it running.
+- 2026-10-13: a link clicked in the browser started DJV, which then refused
+  it (see CR-023). With that fixed, the same link, opened through the
+  Windows handler as the browser opens it, joined the session and opened
+  its video with DJV closed, and was taken by the running DJV with DJV
+  open.
+
+## CR-023: Review links under another address, autoConnect, and their log
+
+| | |
+|---|---|
+| **Status** | Implemented |
+| **Requested** | 2026-10-13 |
+| **Implemented** | 2026-10-13, `feature/lan-server`, `b46bac5ab` (server 2.1.1), `486f0dd19` (DJV) |
+
+**Description.** The portal's link
+`djv://session/review-d87fe0c3?server=http%3A%2F%2Flocalhost%3A8877`
+started DJV, but no session was joined. DJV's log said why, in a message
+that could not be read:
+
+```
+ERROR: The review link is for the sync server {0}, but this DJV uses {1}. ...
+```
+
+- DJV was set to `http://127.0.0.1:8877`, and the portal was opened at
+  `http://localhost:8877`. The two were compared as text, so DJV refused
+  the link. A portal opened by host name, with DJV set to the IP address,
+  would be refused the same way.
+- `ftk::Format` cannot fill a placeholder used twice, and left the message
+  as it was.
+
+Also asked for:
+- an `autoConnect=true|false` parameter on the link;
+- a log of every step a link takes in DJV, so that a failure can be seen
+  there.
+
+**Acceptance criteria.**
+1. A link that names another address of DJV's own server is followed. The
+   session is joined on the server of the settings, never on the link's.
+2. A link for another server, one that cannot be reached, or a server too
+   old to say, is refused with a message that says which.
+3. `autoConnect=true`, or no `autoConnect` at all, joins the session.
+   `autoConnect=false` fills the session in, in the Review tool's Sync
+   section, for the person to connect. Any other value is refused. The
+   portal's links say `true`.
+4. Every step is logged:
+   - where the link came from;
+   - what it asks for;
+   - the sign-in;
+   - the server check;
+   - closing the review, or the person keeping it;
+   - joining.
+
+   Every change of the sync connection is logged too, and so is opening the
+   session's videos. Problems are errors, which show in the Messages tool
+   and the status bar.
+
+**Implementation.**
+- **Server 2.1.1:** `hello` gives `serverId`, made once and kept in the
+  database's new `meta` table.
+- **`DeepLink::autoConnect`** and `SyncServerInfo::serverId`.
+- **`App::openDeepLink`:**
+  - it signs in first;
+  - it accepts the same address at once;
+  - for another address, it asks that address's `hello` on a thread, with
+    no token and no password, and compares the `serverId`s.
+- **`App::observeSyncProposal`**, which the Review tool fills its Sync
+  fields from.
+- **`confirmClose`** takes an `onCancel`.
+- **The log:**
+  - `djv::app::ReviewLink`: the link's steps, and at start which DJV the
+    links open and whether this one takes them;
+  - `djv::app::Sync`: the connection and the session's videos.
+- **The portal** adds `&autoConnect=true` to its links.
+
+**Verified.**
+- The server tests (40) and `djv-test` pass, including the live part.
+  - The live part checks that `localhost` and `127.0.0.1` give the same
+    `serverId`.
+  - The link's `autoConnect` values are tested.
+- With the test container on 2.1.1 and DJV set to `http://127.0.0.1:8877`,
+  links were opened through the Windows handler. Each was followed as
+  logged:
+  - **The user's link, DJV closed:** DJV started, signed in, found
+    `localhost:8877` to be the same server, joined `review-d87fe0c3`, and
+    opened its video from `W:`.
+  - **The same link, DJV running:** it was taken from the new DJV
+    ("Already in the session").
+  - **`autoConnect=false`:** the session was filled in, and nothing was
+    joined.
+  - **`autoConnect=maybe`:** refused, with the reason.
+  - **`localhost:9999`:** refused, as it cannot be reached.
+  - **A session `test` is not one of the people of:** the server's
+    `not-member` refusal is logged as an error.

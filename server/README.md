@@ -226,7 +226,7 @@ X-DJV-Version: 3.7.5
 | `GET /health` | | `{ "ok": true }` |
 | `POST /login` | `{ "username", "password" }` | see above |
 | `POST /logout` | | `{ "ok": true }` |
-| `GET /hello` | | `{ "name", "serverVersion", "djvVersion", "authRequired": true, "signedIn" }`, plus, once signed in, `"user": {...}` and `"storage": { "unc", "user", "password" }` |
+| `GET /hello` | | `{ "name", "serverId", "serverVersion", "djvVersion", "authRequired": true, "signedIn" }`, plus, once signed in, `"user": {...}` and `"storage": { "unc", "user", "password" }`. `serverId` is made once and kept in the database: DJV compares it to follow a review link given with another address of the same server. |
 | `GET /sessions` | | `{ "sessions": [...] }`, the sessions the user may see, newest first (see below) |
 | `POST /sessions` | `{ "description"?, "date"?, "members"?, "videos": [a, b?] }` | The new session, as in the list. The server names it `YYYYMMDD-<description>-<4 random>`. |
 | `PUT /sessions/<session>/info` | any of `description`, `date`, `members`, `videos` | The session, as in the list. New videos are a media event. |

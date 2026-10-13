@@ -221,9 +221,15 @@ The review markers (`MarkersModel`) can be shared live through
     parses them, registers DJV for them in HKCU (the installer in HKLM),
     and passes them between DJVs on a named pipe for the Windows user
     (`bin/djv/main.cpp` hands a link on and exits). `App::openDeepLink`
-    refuses another server than the settings', waits for the sign-in, and
-    closes the review (`confirmClose`) before joining, so that its markers
-    do not go into the session.
+    waits for the sign-in, then follows a link for another address only
+    when that address's `hello` gives the same `serverId` (server 2.1.1,
+    its `meta` table), and always joins on the settings' server. It closes
+    the review (`confirmClose`) before joining, so that its markers do not
+    go into the session; `autoConnect=false` only fills the Review tool in
+    (`observeSyncProposal`). Every step is logged as
+    `djv::app::ReviewLink`, and the connection as `djv::app::Sync`.
+    `ftk::Format` cannot fill a placeholder used twice: pass the value
+    again under a new number.
 - The `.djvr` `sync` section (`ReviewSync`) stores the server and session.
   `App` must disconnect before replacing or clearing the markers (see
   `_applyReview` and `_closeReview`). Otherwise the server would receive

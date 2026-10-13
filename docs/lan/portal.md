@@ -118,6 +118,11 @@ The person who made a session, and `lldjv`, see **Edit** and **Delete**.
 **Copy link** copies the link, to send to someone in a message. It works
 only for people invited to the session.
 
+The link is `djv://session/<session>?server=<server>&autoConnect=true`.
+With `autoConnect=false`, DJV only fills the session in, in the Review
+tool's **Sync** section, and joins when you click **Connect**. A link
+without `autoConnect` joins at once, as `true` does.
+
 ### What it needs
 
 - **DJV registered for review links on that PC.** The installer does this.
@@ -125,10 +130,13 @@ only for people invited to the session.
   so start it once by hand.
   - **Settings → Sync Server → Review links** says which DJV the links open.
   - **Use this DJV** makes it this one.
-- **The same server address in the browser as in DJV.** If DJV is set to
-  `http://192.168.1.40:8877`, open the portal at that address, not through
-  another name or `localhost`. DJV refuses a link for another server, so
-  that a web page cannot send it, and the password it keeps, somewhere else.
+- **The portal opened from the server DJV uses.** The address may differ:
+  with DJV set to `http://192.168.1.40:8877`, a portal opened through the
+  server's name, or as `localhost` on the server itself, works too. DJV asks
+  the address in the link which server it is, and joins only if it is its
+  own; it always joins on the address in its settings. A link for another
+  server is refused, so that a web page cannot send DJV, and the password
+  it keeps, somewhere else.
 - **A sign-in.** DJV signs in by itself with the password it keeps. If it
   has none, it opens the **Sync Server** settings, and joins the session as
   soon as you sign in.
@@ -143,7 +151,11 @@ for the portal's address, and it will not ask again.
 | What happens | Why, and what to do |
 | --- | --- |
 | Clicking **review** does nothing, or the browser says it cannot open the link | DJV is not registered for review links on this PC. Start DJV once, or click **Use this DJV** in its Sync Server settings. |
-| DJV says *the review link is for the sync server …, but this DJV uses …* | The portal was opened at another address than DJV's server setting. Open it at the address in DJV's Sync Server settings. |
+| DJV says *… is another sync server than this DJV's* | The portal is of another server than DJV's settings name. Open the portal of the server in DJV's Sync Server settings, or change the setting. |
+| DJV says *… cannot be reached from this PC* | The address the portal was opened at is not one this PC can reach, such as `localhost` on another PC. Open the portal at the address in DJV's Sync Server settings. |
+| DJV says *… cannot be told: the sync server is older than 2.1.1* | Update the server, or open the portal at exactly the address in DJV's settings. |
+| DJV says *the review link's autoConnect … is neither true nor false* | The link was edited by hand. Use `true` or `false`. |
+| Something else, or nothing at all | DJV writes every step of a link in its **System Log** tool (Tools → System Log, F12), under `djv::app::ReviewLink`, and the sync connection under `djv::app::Sync`; problems also show in **Messages**. The same is in the log file, `%APPDATA%\DJV\djv.3.log`, and the run before in `djv.3.prev.log`. |
 | DJV says the session *is not one you were asked to* | You are not one of the session's people. Ask whoever made it to add you. |
 | DJV says the session *was deleted on the server* | Someone deleted it, or took you out of it. Leave it in the Review tool. |
 | The session opens, but not the video | The media drive is not mapped yet, or the file was moved. See the **Drive** line in the Sync Server settings. |

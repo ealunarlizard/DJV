@@ -25,6 +25,9 @@ Changes:
   videos for the people you choose, and open one in DJV with its "review"
   link. A session of two videos opens them as A and B, side by side. DJV
   registers itself for the links, and a DJV already running takes them.
+  A link with autoConnect=false only fills the session in. A link from the
+  portal opened at another address of the same server (localhost, a host
+  name) is followed, and every step of a link is in the System Log.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 

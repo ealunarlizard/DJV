@@ -11,7 +11,7 @@ root `ChangeLog.md`, under the DJV version.
 
 ## [lan-0.3.0] - Unreleased
 
-Built on DJV 3.7.5-dev, with sync server 2.1.0 (`server/package.json`).
+Built on DJV 3.7.5-dev, with sync server 2.1.1 (`server/package.json`).
 Branch `feature/lan-server`. A DJV of lan-0.2.0 still syncs notes with this
 server; the review links and two-video sessions need this DJV.
 
@@ -34,6 +34,24 @@ server; the review links and two-video sessions need this DJV.
   itself for them, a running DJV takes them from a new one, and the link
   opens the session with its videos. The command `Review/SyncOpenLink`, and
   **Review links** in the Sync Server settings. (CR-022)
+- `autoConnect=true|false` in review links: `false` fills the session in,
+  in the Review tool's Sync section, rather than joining it. No
+  `autoConnect` means `true`, and the portal's links say so. (CR-023)
+- `serverId` in the server's `hello`, the same under every address it is
+  reached at (the `meta` table). (CR-023)
+- DJV logs every step of a review link (`djv::app::ReviewLink`), every
+  change of the sync connection, and the opening of the session's videos
+  (`djv::app::Sync`), in the System Log tool and the log file; problems also
+  in Messages. (CR-023)
+
+### Fixed
+
+- A review link from the portal opened at another address of DJV's server
+  (`localhost` for `127.0.0.1`, a host name for its IP address) was
+  refused; it is followed when the server there has the same `serverId`.
+  The session is still joined on the server of the settings. (CR-023)
+- The message refusing a review link for another server showed `{0}` and
+  `{1}` in place of the addresses. (CR-023)
 
 ### Changed
 
