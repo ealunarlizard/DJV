@@ -136,6 +136,7 @@ namespace djv
             const nlohmann::json user = jsonObject(json, "user");
             out.name = jsonText(json, "name");
             out.serverVersion = jsonText(json, "serverVersion");
+            out.serverId = jsonText(json, "serverId");
             out.djvVersion = jsonText(json, "djvVersion");
             out.authRequired = jsonFlag(json, "authRequired");
             out.username = jsonText(user, "username");

@@ -358,6 +358,9 @@ namespace djv
             FTK_CHECK("3.7.5" == info.djvVersion);
             FTK_CHECK("anna" == info.username);
             FTK_CHECK("Anna" == info.userFullName);
+            FTK_CHECK(info.serverId.empty());
+            hello["serverId"] = "0f6e1c1e-7d1a-4f4e-9a55-3b0d9b8d2c11";
+            FTK_CHECK("0f6e1c1e-7d1a-4f4e-9a55-3b0d9b8d2c11" == models::parseSyncServerInfo(hello).serverId);
             // Not signed in: nothing about the share, and what to do.
             nlohmann::json anonymous;
             anonymous["name"] = "Dev review server";
@@ -751,7 +754,27 @@ namespace djv
             FTK_CHECK(link.has_value());
             FTK_CHECK("sh010" == link->session);
             FTK_CHECK("http://localhost:8877/" == link->server);
+            // The link of the first try of the portal, which has no
+            // autoConnect: it joins, as one that says true does.
+            link = models::parseDeepLink("djv://session/review-d87fe0c3?server=http%3A%2F%2Flocalhost%3A8877");
+            FTK_CHECK(link.has_value());
+            FTK_CHECK("review-d87fe0c3" == link->session);
+            FTK_CHECK("http://localhost:8877" == link->server);
+            FTK_CHECK(link->autoConnect);
+            for (const std::string& yes : { "true", "TRUE", "1", "yes", "on" })
+            {
+                link = models::parseDeepLink("djv://session/sh010?server=http://a&autoConnect=" + yes);
+                FTK_CHECK(link.has_value() && link->autoConnect);
+            }
+            for (const std::string& no : { "false", "False", "0", "no", "off" })
+            {
+                link = models::parseDeepLink("djv://session/sh010?autoconnect=" + no + "&server=http://a");
+                FTK_CHECK(link.has_value() && !link->autoConnect);
+            }
             std::string error;
+            FTK_CHECK(!models::parseDeepLink("djv://session/sh010?server=http://a&autoConnect=maybe", &error).has_value());
+            FTK_CHECK(error.find("maybe") != std::string::npos);
+            FTK_CHECK(!models::parseDeepLink("djv://session/sh010?server=http://a&autoConnect", &error).has_value());
             for (const std::string& bad : {
                 "http://example.com/session/sh010",
                 "djv://open/sh010?server=http://a",
@@ -831,6 +854,36 @@ namespace djv
             FTK_CHECK(
                 models::SyncServerState::Ok == info.state ||
                 models::SyncServerState::SignedOut == info.state);
+            // The server under another of its addresses is the same server,
+            // which is how a review link from a portal opened at another
+            // address is told apart from one for another server.
+            if (!info.serverId.empty())
+            {
+                std::string other = server;
+                for (const auto& [a, b] : std::vector<std::pair<std::string, std::string> >{
+                    { "127.0.0.1", "localhost" }, { "localhost", "127.0.0.1" } })
+                {
+                    const size_t i = other.find(a);
+                    if (i != std::string::npos)
+                    {
+                        other.replace(i, a.size(), b);
+                        break;
+                    }
+                }
+                if (other != server)
+                {
+                    const auto otherInfo = models::fetchSyncServerInfo(other, std::string(), identity);
+                    FTK_CHECK(otherInfo.serverId == info.serverId);
+                    _print(ftk::Format("  live: {0} and {1} are the same server, {2}").
+                        arg(server).
+                        arg(other).
+                        arg(info.serverId));
+                }
+            }
+            else
+            {
+                _print("  live: the server gives no identity (older than 2.1.1)");
+            }
             std::string token;
             if (info.authRequired)
             {

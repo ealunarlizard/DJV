@@ -174,12 +174,41 @@ namespace djv
                 return fail(ftk::Format("The review link's session \"{0}\" is not a session name.").
                     arg(out.session));
             }
+            std::optional<std::string> autoConnect;
             for (const auto& pair : ftk::split(query, '&'))
             {
                 const size_t equals = pair.find('=');
-                if (equals != std::string::npos && "server" == pair.substr(0, equals))
+                const std::string key = lower(decode(pair.substr(0, equals)));
+                const std::string value = std::string::npos == equals ?
+                    std::string() :
+                    decode(pair.substr(equals + 1));
+                if ("server" == key)
                 {
-                    out.server = decode(pair.substr(equals + 1));
+                    out.server = value;
+                }
+                else if ("autoconnect" == key)
+                {
+                    autoConnect = value;
+                }
+            }
+            if (autoConnect.has_value())
+            {
+                const std::string value = lower(autoConnect.value());
+                if ("true" == value || "1" == value || "yes" == value || "on" == value)
+                {
+                    out.autoConnect = true;
+                }
+                else if ("false" == value || "0" == value || "no" == value || "off" == value)
+                {
+                    out.autoConnect = false;
+                }
+                else
+                {
+                    // Rather than guess: joining when the person meant only
+                    // to look, or the other way round, is worse than a
+                    // message saying why nothing happened.
+                    return fail(ftk::Format("The review link's autoConnect \"{0}\" is neither true nor false.").
+                        arg(autoConnect.value()));
                 }
             }
             if (out.server.empty())

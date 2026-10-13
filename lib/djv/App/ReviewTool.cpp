@@ -279,6 +279,7 @@ namespace djv
             std::shared_ptr<ftk::Observer<bool> > hasUndoObserver;
             std::shared_ptr<ftk::Observer<bool> > hasRedoObserver;
             std::shared_ptr<ftk::Observer<models::SyncStatus> > syncStatusObserver;
+            std::shared_ptr<ftk::Observer<models::ReviewSync> > syncProposalObserver;
             std::shared_ptr<ftk::Observer<std::optional<models::SyncMedia> > > syncMediaObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<models::FilesModelItem> > > syncAObserver;
             std::shared_ptr<ftk::Observer<std::string> > syncMediaRootObserver;
@@ -651,6 +652,21 @@ namespace djv
                 {
                     _syncStatusUpdate(value);
                 });
+
+            // A review link with autoConnect false fills the session in,
+            // for the person to connect when they choose.
+            p.syncProposalObserver = ftk::Observer<models::ReviewSync>::create(
+                app->observeSyncProposal(),
+                [this](const models::ReviewSync& value)
+                {
+                    FTK_P();
+                    if (models::SyncState::Disconnected == p.syncState)
+                    {
+                        p.syncServerEdit->setText(value.server);
+                        p.syncSessionEdit->setText(value.session);
+                    }
+                },
+                ftk::ObserverAction::Suppress);
 
             p.syncShareMediaButton->setClickedCallback(
                 [appWeak]

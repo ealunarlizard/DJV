@@ -97,6 +97,11 @@ namespace djv
             std::string name;
             std::string serverVersion;
 
+            //! The server's identity, the same under every address it is
+            //! reached at; empty for servers before 2.1.1. Review links
+            //! compare it (see App::openDeepLink()).
+            std::string serverId;
+
             //! The DJV version the studio runs; empty when not checked.
             std::string djvVersion;
 

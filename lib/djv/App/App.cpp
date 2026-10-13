@@ -86,7 +86,9 @@
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <mutex>
 #include <optional>
+#include <thread>
 
 #if defined(__GLIBC__)
 #include <malloc.h>
@@ -146,6 +148,25 @@ namespace djv
             std::shared_ptr<ftk::CmdLineOption<int> > debugLoop;
             std::shared_ptr<ftk::CmdLineOption<double> > benchmark;
         };
+
+        namespace
+        {
+            //! A review link being followed (App::openDeepLink()).
+            struct DeepLinkPending
+            {
+                models::DeepLink link;
+                //! Whether the link's server is known to be DJV's own.
+                bool serverChecked = false;
+            };
+
+            //! The answer of the server a review link names, filled in by
+            //! the thread that asks for it.
+            struct DeepLinkProbe
+            {
+                std::mutex mutex;
+                std::optional<models::SyncServerInfo> info;
+            };
+        }
 
         struct App::Private
         {
@@ -207,8 +228,23 @@ namespace djv
             //! The review link DJV was started with, followed once the
             //! window is up.
             std::string deepLinkStartup;
-            //! The session of a review link waiting for a sign-in.
-            std::string deepLinkSession;
+            //! The review link being followed, waiting for the sign-in or
+            //! for the check that its server is DJV's own.
+            std::optional<DeepLinkPending> deepLink;
+            //! That check, made on a thread of its own: the answer of the
+            //! server the link names.
+            std::shared_ptr<DeepLinkProbe> deepLinkProbe;
+            std::shared_ptr<ftk::Timer> deepLinkProbeTimer;
+            //! A session a link filled in without joining it (autoConnect
+            //! false), for the Review tool.
+            std::shared_ptr<ftk::Observable<models::ReviewSync> > syncProposal;
+            //! The sync status last logged, so that retries that change
+            //! nothing do not fill the log.
+            std::optional<models::SyncStatus> syncLogged;
+            std::shared_ptr<ftk::Observer<models::SyncStatus> > syncLogObserver;
+            //! The session media last found not opened because files were
+            //! open, so that it is said once.
+            std::optional<models::SyncMedia> syncMediaNotOpened;
             std::shared_ptr<models::AnnotationsModel> annotationsModel;
             std::shared_ptr<models::DrawModel> drawModel;
             std::shared_ptr<ftk::ObservableList<int> > reviewMarkers;
@@ -808,8 +844,14 @@ namespace djv
             }
             if (!bPath.empty())
             {
+                _context->log(
+                    "djv::app::Sync",
+                    ftk::Format("Opening the session's second video, as B: {0}").arg(ftk::fromFileSystem(bPath)));
                 open(ftk::Path(ftk::fromFileSystem(bPath)));
             }
+            _context->log(
+                "djv::app::Sync",
+                ftk::Format("Opening the session's video: {0}").arg(ftk::fromFileSystem(path)));
             open(ftk::Path(ftk::fromFileSystem(path)));
             if (!bPath.empty())
             {
@@ -869,51 +911,79 @@ namespace djv
             p.syncModel->setLocalMedia(media);
         }
 
-        void App::openDeepLink(const std::string& value)
+        namespace
+        {
+            //! Where every step of a review link is logged, so that the
+            //! System Log tool, and the log file, tell the whole story of
+            //! one, and the steps are easy to pick out among the rest.
+            const std::string linkLog = "djv::app::ReviewLink";
+
+            std::string onOff(bool value)
+            {
+                return value ? "true" : "false";
+            }
+        }
+
+        void App::openDeepLink(const std::string& value, const std::string& source)
         {
             FTK_P();
+            _context->log(
+                linkLog,
+                ftk::Format("Received the review link {0} from {1}").
+                    arg(value).
+                    arg(source.empty() ? std::string("the command Review/SyncOpenLink") : source));
             std::string error;
             const auto link = models::parseDeepLink(value, &error);
             if (!link.has_value())
             {
-                _context->log("djv::app::App", error, ftk::LogType::Error);
+                _context->log(linkLog, error, ftk::LogType::Error);
                 return;
             }
+            _context->log(
+                linkLog,
+                ftk::Format("The link asks for the session \"{0}\" on the server {1}, autoConnect {2}").
+                    arg(link->session).
+                    arg(link->server).
+                    arg(onOff(link->autoConnect)));
             if (p.mainWindow)
             {
                 p.mainWindow->raise();
             }
-
-            // A web page must not be able to send this DJV, and the
-            // password it keeps, to another server: the link has to name
-            // the one in the settings.
-            const models::SyncSettings& sync = p.settingsModel->getSync();
-            if (!models::isSameSyncServer(link->server, sync.server))
+            if (p.deepLink.has_value())
             {
                 _context->log(
-                    "djv::app::App",
-                    ftk::Format("The review link is for the sync server {0}, but this DJV uses {1}. "
-                        "Open the portal at {1}, or change the server in the Sync Server settings.").
-                        arg(link->server).
-                        arg(sync.server.empty() ? std::string("none") : sync.server),
-                    ftk::LogType::Error);
-                p.toolsModel->showSection("Settings", "SyncServer");
-                return;
+                    linkLog,
+                    ftk::Format("The link for the session \"{0}\", still waiting, is dropped for this one").
+                        arg(p.deepLink->link.session),
+                    ftk::LogType::Warning);
             }
-            p.deepLinkSession = link->session;
-            _context->log(
-                "djv::app::App",
-                ftk::Format("Opening the review session \"{0}\" from a link").arg(link->session));
+            // A server check still under way is for the link dropped.
+            p.deepLinkProbe.reset();
+            if (p.deepLinkProbeTimer)
+            {
+                p.deepLinkProbeTimer->stop();
+            }
+            p.deepLink = DeepLinkPending{ link.value(), false };
             _deepLinkContinue();
+        }
+
+        std::shared_ptr<ftk::IObservable<models::ReviewSync> > App::observeSyncProposal() const
+        {
+            return _p->syncProposal;
         }
 
         void App::_deepLinkContinue()
         {
             FTK_P();
-            if (p.deepLinkSession.empty())
+            if (!p.deepLink.has_value())
             {
                 return;
             }
+
+            // Signed in first: the session is joined with the token, and the
+            // server's identity, which the check below needs, comes with the
+            // sign-in.
+            const models::SyncSettings& settings = p.settingsModel->getSync();
             const models::LanAuth& auth = p.lanModel->observeAuth()->get();
             switch (auth.state)
             {
@@ -921,22 +991,54 @@ namespace djv
                 break;
             case models::LanAuthState::SigningIn:
                 // lanAuthObserver comes back here once it is done.
+                _context->log(
+                    linkLog,
+                    ftk::Format("Waiting for the sign-in to {0} to finish").arg(settings.server));
                 return;
             default:
             {
-                const models::SyncSettings& sync = p.settingsModel->getSync();
-                if (!sync.username.empty() &&
-                    !models::loadSyncPassword(sync.server, sync.username).empty() &&
+                if (settings.server.empty())
+                {
+                    _context->log(
+                        linkLog,
+                        "No sync server is set in the Sync Server settings: set it and sign in, "
+                        "and the link is followed.",
+                        ftk::LogType::Error);
+                    p.toolsModel->showSection("Settings", "SyncServer");
+                }
+                else if (!settings.username.empty() &&
+                    !models::loadSyncPassword(settings.server, settings.username).empty() &&
                     models::LanAuthState::Failed != auth.state)
                 {
+                    _context->log(
+                        linkLog,
+                        ftk::Format("Signing in to {0} as {1}, with the password kept on this PC").
+                            arg(settings.server).
+                            arg(settings.username));
                     p.lanModel->start();
                 }
                 else
                 {
+                    std::string why;
+                    if (models::LanAuthState::Failed == auth.state)
+                    {
+                        why = ftk::Format("signing in failed ({0})").arg(auth.message).str();
+                    }
+                    else if (settings.username.empty())
+                    {
+                        why = "no user name is set";
+                    }
+                    else
+                    {
+                        why = "no password is kept on this PC";
+                    }
                     _context->log(
-                        "djv::app::App",
-                        ftk::Format("Sign in to the sync server to open the session \"{0}\"; "
-                            "it opens once you have.").arg(p.deepLinkSession),
+                        linkLog,
+                        ftk::Format("Sign in to {0} to open the session \"{1}\": {2}. "
+                            "The link is followed once you have.").
+                            arg(settings.server).
+                            arg(p.deepLink->link.session).
+                            arg(why),
                         ftk::LogType::Warning);
                     p.toolsModel->showSection("Settings", "SyncServer");
                 }
@@ -944,22 +1046,207 @@ namespace djv
             }
             }
 
-            const std::string session = p.deepLinkSession;
-            p.deepLinkSession.clear();
+            // A web page must not be able to send this DJV, and the password
+            // it keeps, to another server, so the session is always joined
+            // on the server of the settings. The link's server only says
+            // which one it is meant for: the same address, or another
+            // address the server answers to with the same identity.
+            if (!p.deepLink->serverChecked)
+            {
+                if (models::isSameSyncServer(p.deepLink->link.server, settings.server))
+                {
+                    _context->log(
+                        linkLog,
+                        ftk::Format("The link's server is this DJV's server, {0}").arg(settings.server));
+                    p.deepLink->serverChecked = true;
+                }
+                else
+                {
+                    _deepLinkProbe();
+                    return;
+                }
+            }
+
+            const models::DeepLink link = p.deepLink->link;
+            p.deepLink.reset();
+            models::ReviewSync sync;
+            sync.server = settings.server;
+            sync.session = link.session;
+            const auto current = p.syncModel->getSync();
+            if (!link.autoConnect)
+            {
+                if (current.has_value() && current.value() != sync)
+                {
+                    _context->log(
+                        linkLog,
+                        ftk::Format("DJV is in the session \"{0}\": disconnect from it in the Review tool's "
+                            "Sync section, then connect to \"{1}\".").
+                            arg(current->session).
+                            arg(link.session),
+                        ftk::LogType::Warning);
+                }
+                else
+                {
+                    _context->log(
+                        linkLog,
+                        ftk::Format("Filled in the session \"{0}\" (autoConnect false): click Connect in the "
+                            "Review tool's Sync section to join it").
+                            arg(link.session));
+                }
+                p.syncProposal->setAlways(sync);
+                p.toolsModel->showSection("Review", "Sync");
+                return;
+            }
+            if (current.has_value() && current.value() == sync)
+            {
+                _context->log(
+                    linkLog,
+                    ftk::Format("Already in the session \"{0}\"").arg(link.session));
+                return;
+            }
+
             // From an empty review: markers already open would otherwise be
             // sent into the session (SyncMerger::snapshot()). The person is
             // asked about unsaved changes first, as when closing a review.
             confirmClose(
-                [this, session]
+                [this, sync]
                 {
                     FTK_P();
+                    if (!p.filesModel->getFiles().empty() || !p.markersModel->getMarkers().empty())
+                    {
+                        _context->log(linkLog, "Closing the open review, to join the session from an empty one");
+                    }
                     _closeReview();
                     p.syncAutoLoaded.reset();
-                    models::ReviewSync sync;
-                    sync.server = p.settingsModel->getSync().server;
-                    sync.session = session;
+                    _context->log(
+                        linkLog,
+                        ftk::Format("Joining the session \"{0}\" on {1}").
+                            arg(sync.session).
+                            arg(sync.server));
                     connectSync(sync);
+                },
+                [this, sync]
+                {
+                    _context->log(
+                        linkLog,
+                        ftk::Format("The open review was kept, so the session \"{0}\" was not joined").
+                            arg(sync.session),
+                        ftk::LogType::Warning);
                 });
+        }
+
+        void App::_deepLinkProbe()
+        {
+            FTK_P();
+            const std::string server = p.deepLink->link.server;
+            _context->log(
+                linkLog,
+                ftk::Format("The link names {0}, and this DJV uses {1}: asking {2} whether it is the same server").
+                    arg(server).
+                    arg(p.settingsModel->getSync().server).
+                    arg(server));
+            // On a thread of its own, as the sign-in is: the server may be
+            // slow or not there at all. No token is sent, nor a password.
+            auto probe = std::make_shared<DeepLinkProbe>();
+            p.deepLinkProbe = probe;
+            std::thread(
+                [probe, server, identity = p.lanModel->getIdentity()]
+                {
+                    const models::SyncServerInfo info = models::fetchSyncServerInfo(server, std::string(), identity);
+                    std::unique_lock<std::mutex> lock(probe->mutex);
+                    probe->info = info;
+                }).detach();
+            if (!p.deepLinkProbeTimer)
+            {
+                p.deepLinkProbeTimer = ftk::Timer::create(_context);
+                p.deepLinkProbeTimer->setRepeating(true);
+            }
+            p.deepLinkProbeTimer->start(
+                std::chrono::milliseconds(100),
+                [this]
+                {
+                    FTK_P();
+                    if (!p.deepLinkProbe)
+                    {
+                        p.deepLinkProbeTimer->stop();
+                        return;
+                    }
+                    std::optional<models::SyncServerInfo> info;
+                    {
+                        std::unique_lock<std::mutex> lock(p.deepLinkProbe->mutex);
+                        info = p.deepLinkProbe->info;
+                    }
+                    if (info.has_value())
+                    {
+                        p.deepLinkProbeTimer->stop();
+                        p.deepLinkProbe.reset();
+                        _deepLinkProbed(info.value());
+                    }
+                });
+        }
+
+        void App::_deepLinkProbed(const models::SyncServerInfo& info)
+        {
+            FTK_P();
+            if (!p.deepLink.has_value())
+            {
+                return;
+            }
+            const std::string linkServer = p.deepLink->link.server;
+            const std::string server = p.settingsModel->getSync().server;
+            const models::SyncServerInfo& own = p.lanModel->observeServerInfo()->get();
+            std::string refusal;
+            if (info.state != models::SyncServerState::Ok && info.state != models::SyncServerState::SignedOut)
+            {
+                // The reason is a sentence of its own; here it is inside one.
+                std::string reason = info.message.empty() ? std::string("no answer") : info.message;
+                while (!reason.empty() && '.' == reason.back())
+                {
+                    reason.pop_back();
+                }
+                refusal = ftk::Format("{0}, the server the link names, cannot be reached from this PC ({1})").
+                    arg(linkServer).
+                    arg(reason).
+                    str();
+            }
+            else if (info.serverId.empty() || own.serverId.empty())
+            {
+                refusal = ftk::Format("whether {0} is the same server as {1} cannot be told: the sync server "
+                    "is older than 2.1.1").
+                    arg(linkServer).
+                    arg(server).
+                    str();
+            }
+            else if (info.serverId != own.serverId)
+            {
+                refusal = ftk::Format("{0} is another sync server than this DJV's, {1}").
+                    arg(linkServer).
+                    arg(server).
+                    str();
+            }
+            if (!refusal.empty())
+            {
+                _context->log(
+                    linkLog,
+                    ftk::Format("The session \"{0}\" was not opened: {1}. Open the portal at {2}, "
+                        "or change the server in the Sync Server settings.").
+                        arg(p.deepLink->link.session).
+                        arg(refusal).
+                        arg(server),
+                    ftk::LogType::Error);
+                p.deepLink.reset();
+                p.toolsModel->showSection("Settings", "SyncServer");
+                return;
+            }
+            _context->log(
+                linkLog,
+                ftk::Format("{0} is the same server as {1} (server {2}); DJV uses {3} for the session").
+                    arg(linkServer).
+                    arg(server).
+                    arg(info.serverId).
+                    arg(server));
+            p.deepLink->serverChecked = true;
+            _deepLinkContinue();
         }
 
         void App::_deepLinkInit()
@@ -984,18 +1271,37 @@ namespace djv
             std::string error;
             if (!exe.empty() && models::registerDeepLinkHandler(exe, false, &error))
             {
-                _context->log("djv::app::App", "Registered DJV for review links (djv:)");
+                _context->log(linkLog, ftk::Format("Registered this DJV for review links: {0}").
+                    arg(ftk::fromFileSystem(exe)));
             }
             else if (!error.empty())
             {
-                _context->log("djv::app::App", error, ftk::LogType::Warning);
+                _context->log(linkLog, error, ftk::LogType::Warning);
             }
+#if defined(_WIN32)
+            // Which DJV a click opens: another copy than this one is the
+            // first thing to rule out when a link seems to do nothing.
+            const std::filesystem::path handler = models::getDeepLinkHandler();
+            _context->log(
+                linkLog,
+                handler.empty() ?
+                    std::string("No program is registered for review links on this PC") :
+                    ftk::Format("Review links open {0}").arg(ftk::fromFileSystem(handler)).str(),
+                handler.empty() ? ftk::LogType::Warning : ftk::LogType::Message);
+#endif // _WIN32
             p.deepLinkListener = models::DeepLinkListener::create(_context);
             p.deepLinkListener->setCallback(
                 [this](const std::string& value)
                 {
-                    openDeepLink(value);
+                    openDeepLink(value, "another DJV, started for it");
                 });
+#if defined(_WIN32)
+            _context->log(
+                linkLog,
+                p.deepLinkListener->isListening() ?
+                    std::string("Taking the review links of DJVs started for them") :
+                    std::string("Another DJV running for this Windows user takes the review links"));
+#endif // _WIN32
         }
 
         void App::_syncMediaUpdate(const std::optional<models::SyncMedia>& value)
@@ -1012,7 +1318,20 @@ namespace djv
             // Only into an empty player: a file already open is the one the
             // person chose, so the session's media is offered (the Review
             // tool's Load button) rather than put in its place.
-            if (!p.filesModel->getFiles().empty() || p.syncAutoLoaded == value)
+            if (!p.filesModel->getFiles().empty())
+            {
+                if (p.syncMediaNotOpened != value && p.syncAutoLoaded != value)
+                {
+                    p.syncMediaNotOpened = value;
+                    _context->log(
+                        "djv::app::Sync",
+                        ftk::Format("The session's media \"{0}\" is not opened, since files are open: "
+                            "Load in the Review tool's Sync section opens it.").
+                            arg(value->name));
+                }
+                return;
+            }
+            if (p.syncAutoLoaded == value)
             {
                 return;
             }
@@ -2110,7 +2429,9 @@ namespace djv
                 });
         }
 
-        void App::confirmClose(const std::function<void()>& onProceed)
+        void App::confirmClose(
+            const std::function<void()>& onProceed,
+            const std::function<void()>& onCancel)
         {
             FTK_P();
             // Prompt for a review that is already saved (has a path) and has
@@ -2135,7 +2456,7 @@ namespace djv
                     "Save changes to the review before closing?",
                 { "Save", "Don't Save", "Cancel" },
                 p.mainWindow,
-                [this, onProceed](int value)
+                [this, onProceed, onCancel](int value)
                 {
                     switch (value)
                     {
@@ -2160,6 +2481,10 @@ namespace djv
                         break;
                     default:
                         // Cancel, and dismissing the dialog means the same.
+                        if (onCancel)
+                        {
+                            onCancel();
+                        }
                         break;
                     }
                 });
@@ -3172,6 +3497,7 @@ namespace djv
             p.annotationsModel = models::AnnotationsModel::create();
             p.drawModel = models::DrawModel::create(getSettings());
             p.reviewMarkers = ftk::ObservableList<int>::create();
+            p.syncProposal = ftk::Observable<models::ReviewSync>::create();
             // Introspection: what the models hold right now, as opposed to
             // the settings file, which holds what survived to the last
             // clean quit. Comparing this against a widget dump is how a
@@ -3455,10 +3781,27 @@ namespace djv
                         _connectSync(sync.value());
                     }
                     // A review link that waited for the sign-in.
-                    if (models::LanAuthState::SignedIn == value.state &&
-                        !p.deepLinkSession.empty())
+                    if (p.deepLink.has_value())
                     {
-                        _deepLinkContinue();
+                        if (models::LanAuthState::SignedIn == value.state)
+                        {
+                            _context->log(
+                                "djv::app::ReviewLink",
+                                ftk::Format("Signed in as {0}").arg(value.username));
+                            _deepLinkContinue();
+                        }
+                        else if (models::LanAuthState::Failed == value.state)
+                        {
+                            // Kept: signing in by hand follows it.
+                            _context->log(
+                                "djv::app::ReviewLink",
+                                ftk::Format("Signing in failed ({0}): the session \"{1}\" opens once you "
+                                    "have signed in in the Sync Server settings.").
+                                    arg(value.message).
+                                    arg(p.deepLink->link.session),
+                                ftk::LogType::Error);
+                            p.toolsModel->showSection("Settings", "SyncServer");
+                        }
                     }
                 });
             // A token the server no longer takes -- the admin gave the user
@@ -3479,6 +3822,49 @@ namespace djv
                         p.syncRefusedToken = auth.token;
                         p.lanModel->start();
                     }
+                });
+            // Every change of the connection, for every session and not
+            // only the links': what went wrong is what someone looking into
+            // a problem needs first.
+            p.syncLogObserver = ftk::Observer<models::SyncStatus>::create(
+                p.syncModel->observeStatus(),
+                [this](const models::SyncStatus& value)
+                {
+                    FTK_P();
+                    if (p.syncLogged == value ||
+                        (!p.syncLogged.has_value() && models::SyncState::Disconnected == value.state))
+                    {
+                        p.syncLogged = value;
+                        return;
+                    }
+                    p.syncLogged = value;
+                    std::string text;
+                    ftk::LogType type = ftk::LogType::Message;
+                    switch (value.state)
+                    {
+                    case models::SyncState::Disconnected:
+                        text = "Disconnected from the sync session";
+                        break;
+                    case models::SyncState::Connecting:
+                        text = ftk::Format("Connecting to the session \"{0}\" on {1}{2}").
+                            arg(value.session).
+                            arg(value.server).
+                            arg(value.message.empty() ? std::string() : ": " + value.message);
+                        break;
+                    case models::SyncState::Connected:
+                        text = ftk::Format("Connected to the session \"{0}\" on {1}").
+                            arg(value.session).
+                            arg(value.server);
+                        break;
+                    case models::SyncState::Error:
+                        text = ftk::Format("The session \"{0}\" on {1}: {2}").
+                            arg(value.session).
+                            arg(value.server).
+                            arg(value.message);
+                        type = ftk::LogType::Error;
+                        break;
+                    }
+                    _context->log("djv::app::Sync", text, type);
                 });
             p.syncMediaObserver = ftk::Observer<std::optional<models::SyncMedia> >::create(
                 p.syncModel->observeMedia(),
@@ -3986,7 +4372,7 @@ namespace djv
             }
             if (!p.deepLinkStartup.empty())
             {
-                openDeepLink(p.deepLinkStartup);
+                openDeepLink(p.deepLinkStartup, "the command line");
                 p.deepLinkStartup.clear();
             }
 

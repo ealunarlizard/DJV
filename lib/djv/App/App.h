@@ -33,6 +33,7 @@ namespace djv
         struct Review;
         struct ReviewSync;
         struct SyncMedia;
+        struct SyncServerInfo;
 
         class AnnotationsModel;
         class AppInfoModel;
@@ -163,12 +164,23 @@ namespace djv
             std::filesystem::path resolveSyncMedia(bool& exists) const;
 
             //! Open a review link from the server's portal
-            //! (djv://session/<session>?server=<server>): close the review,
-            //! join the session, and open its videos. A link for another
-            //! server than the settings' is refused; without a sign-in, the
-            //! Sync Server settings are shown, and the link is followed once
-            //! signed in. Problems are reported in the log.
-            void openDeepLink(const std::string&);
+            //! (djv://session/<session>?server=<server>&autoConnect=true):
+            //! close the review, join the session, and open its videos; with
+            //! autoConnect false, only fill the session in (see
+            //! observeSyncProposal()).
+            //!
+            //! The session is always joined on the server of the settings.
+            //! A link that names another address is followed only when the
+            //! server there has the same identity (SyncServerInfo::serverId).
+            //! Without a sign-in, the Sync Server settings are shown, and the
+            //! link is followed once signed in. Every step is logged as
+            //! "djv::app::ReviewLink", and problems as errors. The source
+            //! says where the link came from, for the log.
+            void openDeepLink(const std::string&, const std::string& source = std::string());
+
+            //! Observe the sync session a review link filled in without
+            //! joining it, for the Review tool's Sync section.
+            std::shared_ptr<ftk::IObservable<models::ReviewSync> > observeSyncProposal() const;
 
             //! Observe the frames that carry a note or a drawing, sorted and
             //! deduplicated.
@@ -297,8 +309,11 @@ namespace djv
 
             //! If the review has unsaved changes, prompt the user to save,
             //! discard, or cancel; otherwise proceed immediately. The proceed
-            //! callback runs when it is safe to close.
-            void confirmClose(const std::function<void()>& onProceed);
+            //! callback runs when it is safe to close, the cancel callback
+            //! when the person chose to keep the review.
+            void confirmClose(
+                const std::function<void()>& onProceed,
+                const std::function<void()>& onCancel = nullptr);
 
             //! Quit asks about unsaved review changes first: this override is
             //! what the window system's quit (e.g. Command-Q) reaches.
@@ -415,6 +430,8 @@ namespace djv
             void _closeReview();
             bool _connectSync(const models::ReviewSync&);
             void _deepLinkContinue();
+            void _deepLinkProbe();
+            void _deepLinkProbed(const models::SyncServerInfo&);
             void _deepLinkInit();
 
             void _syncLocalMediaUpdate();

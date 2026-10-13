@@ -25,7 +25,8 @@ namespace djv
         //! \name Review links
         //!
         //! The sync server's portal lists the review sessions, each with a
-        //! "review" link: djv://session/<session>?server=<server>. Windows
+        //! "review" link:
+        //! djv://session/<session>?server=<server>&autoConnect=true. Windows
         //! starts DJV with the link as its only argument, because DJV
         //! registers itself for djv: links. A DJV already running takes the
         //! link from the new one, which then exits, so that one click does
@@ -41,6 +42,11 @@ namespace djv
             //! The sync server the portal that made the link is on.
             std::string server;
 
+            //! Whether to join the session at once (the portal's links, and
+            //! a link that does not say), or only fill it in for the person
+            //! to connect.
+            bool autoConnect = true;
+
             bool operator == (const DeepLink&) const = default;
         };
 
@@ -49,7 +55,8 @@ namespace djv
 
         //! Take a review link apart. Returns nothing, with the reason, for
         //! a link that is not one: another kind, a session name that cannot
-        //! be one, or a server that is not an http:// address.
+        //! be one, a server that is not an http:// address, or an
+        //! autoConnect that is not true/false, 1/0, yes/no or on/off.
         DJV_MODELS_API std::optional<DeepLink> parseDeepLink(
             const std::string&,
             std::string* error = nullptr);
