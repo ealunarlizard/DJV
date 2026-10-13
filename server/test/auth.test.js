@@ -277,6 +277,43 @@ test('hello tells a signed-in DJV where the media is, and how to sign in to it',
   }
 });
 
+test('hello gives the server\'s identity to anyone, the same across a restart', async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'djv-auth-'));
+  const configFile = path.join(dataDir, 'config.json');
+  await writeFile(configFile, JSON.stringify(studio));
+  let s = await start({ dataDir, configFile });
+  let id;
+  try {
+    await addUser(s, 'anna', 'anna-password', 'Anna');
+    const anonymous = await (await fetch(`${s.base}/api/hello`)).json();
+    id = anonymous.serverId;
+    assert.match(id, /^[0-9a-f-]{36}$/);
+    const token = await signIn(s.base, 'anna', 'anna-password');
+    const signedIn = await (await fetch(`${s.base}/api/hello`, { headers: bearer(token) })).json();
+    assert.equal(signedIn.serverId, id);
+    // The same server under another address is the same server.
+    const other = await (await fetch(`${s.base.replace('127.0.0.1', 'localhost')}/api/hello`)).json();
+    assert.equal(other.serverId, id);
+  } finally {
+    await s.stop({ keepData: true });
+  }
+
+  s = await start({ dataDir, configFile });
+  try {
+    assert.equal((await (await fetch(`${s.base}/api/hello`)).json()).serverId, id);
+  } finally {
+    await s.stop();
+  }
+
+  // Another server's data, another identity.
+  s = await start();
+  try {
+    assert.notEqual((await (await fetch(`${s.base}/api/hello`)).json()).serverId, id);
+  } finally {
+    await s.stop();
+  }
+});
+
 test('the changes say who made them, and the admin page who is connected', async () => {
   const s = await start();
   try {

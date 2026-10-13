@@ -35,7 +35,7 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
 } from 'node:fs';
 import { link, mkdir, open, rename, rm, unlink } from 'node:fs/promises';
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -299,6 +299,11 @@ class Store {
         created  TEXT NOT NULL,
         updated  TEXT NOT NULL
       );
+      -- What the server knows about itself, such as its identity.
+      CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
     const db = this.db;
@@ -348,6 +353,14 @@ class Store {
       removeExpiredTokens: db.prepare('DELETE FROM tokens WHERE expires < ?'),
       lastSignIn: db.prepare('SELECT username, MAX(created) AS created FROM tokens GROUP BY username'),
     };
+
+    // The server's identity, made once and kept with its data, so that it
+    // stays the same across restarts, new images and restored backups.
+    // DJV compares it to tell whether a review link given with another
+    // address -- "localhost" for "127.0.0.1", a host name for its IP
+    // address -- is for the server it signs in to.
+    db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('serverId', randomUUID());
+    this.serverId = db.prepare('SELECT value FROM meta WHERE key = ?').get('serverId').value;
   }
 
   addToken(hash, username, client, expires) {
@@ -932,6 +945,9 @@ export function createSyncServer(options = {}) {
   function hello(user) {
     const out = {
       name: config.name,
+      // Given to anyone: DJV only compares it, and always connects to the
+      // address in its own settings, so knowing it gains nothing.
+      serverId: store.serverId,
       serverVersion: SERVER_VERSION,
       djvVersion: config.djvVersion,
       authRequired: true,

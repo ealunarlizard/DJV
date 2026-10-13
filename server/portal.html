@@ -256,7 +256,9 @@ function show(name) {
 // --- Sessions --------------------------------------------------------------
 
 function reviewLink(session) {
-  return `djv://session/${encodeURIComponent(session)}?server=${encodeURIComponent(location.origin)}`;
+  // autoConnect: DJV joins the session at once, rather than only filling
+  // it in for the person to connect.
+  return `djv://session/${encodeURIComponent(session)}?server=${encodeURIComponent(location.origin)}&autoConnect=true`;
 }
 
 function renderSessions() {
