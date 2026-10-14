@@ -1,5 +1,52 @@
 add_subdirectory(djv-test)
 
+# Scripted sessions: each shot in capture/capture.json is a test that drives
+# the application through the capture tool -- clicks, drags, keys, typed
+# text -- and must end with its expectations met and nothing marked as an
+# error in the log (see ftk::Capture and etc/Screenshots/notes.txt). The
+# window is drawn offscreen, so no display is needed beyond what OpenGL
+# needs; the Linux jobs run under xvfb. The screenshots land in the build
+# tree, for looking at a failure.
+if(NOT DJV_TESTS_NO_GL)
+    set(DJV_CAPTURE_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/capture/capture.json)
+    set(DJV_CAPTURE_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/capture)
+    file(MAKE_DIRECTORY ${DJV_CAPTURE_OUTPUT})
+    file(READ ${DJV_CAPTURE_MANIFEST} DJV_CAPTURE_JSON)
+    string(JSON DJV_CAPTURE_COUNT LENGTH ${DJV_CAPTURE_JSON} shots)
+    math(EXPR DJV_CAPTURE_LAST "${DJV_CAPTURE_COUNT} - 1")
+    foreach(i RANGE ${DJV_CAPTURE_LAST})
+        string(JSON shot GET ${DJV_CAPTURE_JSON} shots ${i} id)
+        add_test(
+            NAME djv-capture-${shot}
+            COMMAND djv
+                -resetSettings
+                -settingsFile ${DJV_CAPTURE_OUTPUT}/settings.json
+                -captureManifest ${DJV_CAPTURE_MANIFEST}
+                -captureShot ${shot}
+                -captureOutput ${DJV_CAPTURE_OUTPUT}
+                -log
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+        # The PATH entry: see djv-test/CMakeLists.txt. The audio driver: a
+        # runner has no sound card, and a player that cannot open the audio
+        # device logs an error, which a strict shot counts as a failure.
+        # The shots do not play audio, so SDL's dummy driver serves them.
+        # The video driver: the Linux jobs run under xvfb, where only X11
+        # can work, and SDL probing Wayland first on a runner with no
+        # session (no XDG_RUNTIME_DIR) crashed before the first log line.
+        set(DJV_CAPTURE_ENV
+            "PATH=path_list_prepend:${CMAKE_INSTALL_PREFIX}/python/opentimelineio"
+            "SDL_AUDIODRIVER=set:dummy")
+        if(UNIX AND NOT APPLE)
+            list(APPEND DJV_CAPTURE_ENV "SDL_VIDEODRIVER=set:x11")
+        endif()
+        set_tests_properties(djv-capture-${shot} PROPERTIES
+            ENVIRONMENT_MODIFICATION "${DJV_CAPTURE_ENV}")
+    endforeach()
+    # A shot added to the manifest is a test added, so configure again.
+    set_property(DIRECTORY APPEND PROPERTY
+        CMAKE_CONFIGURE_DEPENDS ${DJV_CAPTURE_MANIFEST})
+endif()
+
 if(DJV_PYTHON)
     # Through the runner rather than "-m unittest" directly: on Windows the
     # bindings' dependencies live in bin, and since Python 3.8 only
@@ -32,4 +79,30 @@ if(DJV_PYTHON)
     endif()
     set_tests_properties(djv-python-test PROPERTIES
         ENVIRONMENT_MODIFICATION "${PYTHON_TEST_ENV}")
+
+    # The Python application in examples/python starts the C++ application
+    # through the bindings and adds a tool and a command to it, and nothing
+    # else exercises that, so it drifts: a binding that changed is only
+    # found when someone runs it. This runs it as a capture (the capture
+    # tool is the application's), which opens the Python tool, types into
+    # it and runs the command. The audio and video drivers: see above.
+    if(NOT DJV_TESTS_NO_GL)
+        set(PYTHON_EXAMPLE_ENV ${PYTHON_TEST_ENV} "SDL_AUDIODRIVER=set:dummy")
+        if(UNIX AND NOT APPLE)
+            list(APPEND PYTHON_EXAMPLE_ENV "SDL_VIDEODRIVER=set:x11")
+        endif()
+        add_test(
+            NAME djv-python-example
+            COMMAND ${Python_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/examples/python/main.py
+                -resetSettings
+                -settingsFile ${DJV_CAPTURE_OUTPUT}/python-settings.json
+                -captureManifest ${CMAKE_CURRENT_SOURCE_DIR}/capture/python.json
+                -captureShot notes-tool
+                -captureOutput ${DJV_CAPTURE_OUTPUT}
+                -log
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+        set_tests_properties(djv-python-example PROPERTIES
+            ENVIRONMENT_MODIFICATION "${PYTHON_EXAMPLE_ENV}")
+    endif()
 endif()

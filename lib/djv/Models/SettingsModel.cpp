@@ -2,6 +2,7 @@
 // Copyright Contributors to the DJV project.
 
 #include <djv/Models/SettingsModel.h>
+#include <djv/Models/SettingsKeys.h>
 
 #include <ftk/UI/ColorWidgetSystem.h>
 
@@ -59,6 +60,7 @@ namespace djv
             "1920",
             "3840",
             "4096",
+            "Width",
             "Custom");
 
         int getWidth(ExportRenderSize value)
@@ -69,6 +71,7 @@ namespace djv
                 1920,
                 3840,
                 4096,
+                0,
                 0
             };
             return data[static_cast<size_t>(value)];
@@ -207,25 +210,25 @@ namespace djv
         {
             std::map<std::string, std::string> keys =
             {
-                { "Audio", "/Audio.1" },
-                { "Cache", "/Cache" },
-                { "ThumbnailCache", "/ThumbnailCache" },
-                { "Export", "/Export" },
-                { "FileBrowser", "/FileBrowser" },
-                { "ImageSeq", "/ImageSeq.1" },
-                { "OTIO", "/OTIO.2" },
-                { "Shortcuts", "/Shortcuts.4" },
-                { "Misc", "/Misc.3" },
-                { "Mouse", "/Mouse.1" },
-                { "Playback", "/Playback.1" },
-                { "Review", "/Review.1" },
-                { "Sync", "/Sync.1" },
-                { "Style", "/Style.2" },
-                { "Timeline", "/Timeline" },
-                { "Window", "/Window" },
-                { "FFmpeg", "/FFmpeg" },
-                { "FFmpegCmd", "/FFmpegCmd" },
-                { "USD", "/USD.1" },
+                { "Audio", settingsKeys::audio },
+                { "Cache", settingsKeys::cache },
+                { "ThumbnailCache", settingsKeys::thumbnailCache },
+                { "Export", settingsKeys::exportSettings },
+                { "FileBrowser", settingsKeys::fileBrowser },
+                { "ImageSeq", settingsKeys::imageSeq },
+                { "OTIO", settingsKeys::otio },
+                { "Shortcuts", settingsKeys::shortcuts },
+                { "Misc", settingsKeys::misc },
+                { "Mouse", settingsKeys::mouse },
+                { "Playback", settingsKeys::playback },
+                { "Review", settingsKeys::review },
+                { "Sync", settingsKeys::sync },
+                { "Style", settingsKeys::style },
+                { "Timeline", settingsKeys::timeline },
+                { "Window", settingsKeys::window },
+                { "FFmpeg", settingsKeys::ffmpeg },
+                { "FFmpegCmd", settingsKeys::ffmpegCmd },
+                { "USD", settingsKeys::usd },
             };
         }
 
@@ -314,7 +317,7 @@ namespace djv
                 auto colorWidgetSystem =
                     context->getSystem<ftk::ColorWidgetSystem>();
                 int mode = static_cast<int>(colorWidgetSystem->getMode());
-                settings->get("/ColorWidget/Mode", mode);
+                settings->get(settingsKeys::colorWidgetMode, mode);
                 if (mode >= 0 &&
                     mode < static_cast<int>(ftk::ColorWidgetMode::Count))
                 {
@@ -374,7 +377,7 @@ namespace djv
             {
                 settings->getT(keys["Shortcuts"], shortcutsSaved);
             }
-            else if (settings->getT("/Shortcuts.3", shortcutsSaved))
+            else if (settings->getT(settingsKeys::shortcutsPrevious, shortcutsSaved))
             {
                 shortcutsSaved.shortcuts = getBoundShortcuts(shortcutsSaved.shortcuts);
             }
@@ -474,7 +477,7 @@ namespace djv
             p.settings->setT(keys["FileBrowser"], fileBrowser);
 
             p.settings->set(
-                "/ColorWidget/Mode",
+                settingsKeys::colorWidgetMode,
                 static_cast<int>(
                     context->getSystem<ftk::ColorWidgetSystem>()->getMode()));
 
@@ -1058,6 +1061,7 @@ namespace djv
             json["Dir"] = value.dir;
             json["RenderSize"] = to_string(value.renderSize);
             json["CustomWidth"] = value.customWidth;
+            json["CustomHeight"] = value.customHeight;
             json["FileType"] = to_string(value.fileType);
             // The names are not kept: an output is named for the file being
             // exported, which the export widget works out each time. The
@@ -1109,6 +1113,7 @@ namespace djv
         {
             json["TooltipsEnabled"] = value.tooltipsEnabled;
             json["ShowSetup"] = value.showSetup;
+            json["ClearRecentOnExit"] = value.clearRecentOnExit;
         }
 
         void to_json(nlohmann::json& json, const MouseActionBinding& value)
@@ -1250,6 +1255,17 @@ namespace djv
                 json.at("CustomSize").get_to(customSize);
                 value.customWidth = customSize.w;
             }
+            if (json.contains("CustomHeight"))
+            {
+                json.at("CustomHeight").get_to(value.customHeight);
+            }
+            else if (ExportRenderSize::Custom == value.renderSize)
+            {
+                // Before there was a height to type, "Custom" was a width
+                // with the height following the aspect ratio, which is now
+                // "Width".
+                value.renderSize = ExportRenderSize::Width;
+            }
             from_string(json.at("FileType").get<std::string>(), value.fileType);
             if (json.contains("ImageExt"))
             {
@@ -1314,6 +1330,10 @@ namespace djv
         {
             json.at("TooltipsEnabled").get_to(value.tooltipsEnabled);
             json.at("ShowSetup").get_to(value.showSetup);
+            if (json.contains("ClearRecentOnExit"))
+            {
+                json.at("ClearRecentOnExit").get_to(value.clearRecentOnExit);
+            }
         }
 
         void from_json(const nlohmann::json& json, MouseActionBinding& value)

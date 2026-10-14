@@ -4,12 +4,11 @@
 #include <djv/UI/SettingsWidgets.h>
 
 #include <ftk/UI/DrawUtil.h>
-#include <ftk/UI/GridLayout.h>
 #include <ftk/UI/Label.h>
 #include <ftk/UI/RowLayout.h>
 #include <ftk/UI/ScreenshotTag.h>
 #include <ftk/UI/SearchBox.h>
-#include <ftk/UI/Spacer.h>
+#include <ftk/UI/TableWidget.h>
 #include <ftk/UI/ToolButton.h>
 
 namespace djv
@@ -22,6 +21,7 @@ namespace djv
             bool collision = false;
 
             std::shared_ptr<ftk::Label> label;
+            std::shared_ptr<ftk::ToolButton> clearButton;
 
             std::function<void(const ftk::KeyShortcut&)> callback;
 
@@ -31,6 +31,7 @@ namespace djv
                 int minSize = 0;
                 int border = 0;
                 int keyFocus = 0;
+                int pad = 0;
             };
             SizeData size;
 
@@ -57,9 +58,30 @@ namespace djv
             _setMousePressEnabled(true);
 
             p.label = ftk::Label::create(context, shared_from_this());
-            p.label->setMarginRole(ftk::SizeRole::MarginSmall, ftk::SizeRole::MarginInside);
+            // The text is inset as the text of a table cell is, so that
+            // it does not move when a cell is edited.
+            p.label->setMarginRole(ftk::SizeRole::MarginInside);
+
+            // The clear button is inside the field, so that the field is
+            // the size of the table cell it is put over.
+            p.clearButton = ftk::ToolButton::create(context, shared_from_this());
+            p.clearButton->setIcon("ClearSmall");
+            p.clearButton->setAcceptsKeyFocus(false);
+            p.clearButton->setTooltip("Clear the shortcut");
 
             _widgetUpdate();
+
+            p.clearButton->setClickedCallback(
+                [this]
+                {
+                    FTK_P();
+                    p.shortcut = ftk::KeyShortcut();
+                    _widgetUpdate();
+                    if (p.callback)
+                    {
+                        p.callback(p.shortcut);
+                    }
+                });
         }
 
         ShortcutEdit::ShortcutEdit() :
@@ -110,7 +132,13 @@ namespace djv
             IMouseWidget::setGeometry(value);
             FTK_P();
             const ftk::Box2I g = ftk::margin(value, -p.size.keyFocus);
-            p.label->setGeometry(g);
+            const int w = std::min(p.clearButton->getSizeHint().w, g.w());
+            p.label->setGeometry(ftk::Box2I(
+                g.min.x + p.size.pad,
+                g.min.y,
+                g.w() - w - p.size.pad,
+                g.h()));
+            p.clearButton->setGeometry(ftk::Box2I(g.max.x + 1 - w, g.min.y, w, g.h()));
         }
 
         ftk::Box2I ShortcutEdit::getChildrenClipRect() const
@@ -122,7 +150,9 @@ namespace djv
         {
             FTK_P();
             ftk::Size2I out;
-            out.w = std::max(p.label->getSizeHint().w, p.size.minSize);
+            out.w = std::max(p.label->getSizeHint().w, p.size.minSize) +
+                p.size.pad +
+                p.clearButton->getSizeHint().w;
             out.h = p.label->getSizeHint().h;
             return out + p.size.keyFocus * 2;
         }
@@ -148,6 +178,7 @@ namespace djv
                 p.size.minSize = event.style->getSizeRole(ftk::SizeRole::Icon, event.displayScale);
                 p.size.border = event.style->getSizeRole(ftk::SizeRole::Border, event.displayScale);
                 p.size.keyFocus = event.style->getSizeRole(ftk::SizeRole::KeyFocus, event.displayScale);
+                p.size.pad = event.style->getSizeRole(ftk::SizeRole::LabelPad, event.displayScale);
                 p.draw.reset();
             }
         }
@@ -214,8 +245,12 @@ namespace djv
             FTK_P();
             switch (event.key)
             {
+            // Return and tab are not shortcuts: they are the way out of
+            // the field without a change. Escape is not, because it can be
+            // a shortcut.
             case ftk::Key::Unknown:
             case ftk::Key::Return:
+            case ftk::Key::Tab:
             case ftk::Key::CapsLock:
             case ftk::Key::ScrollLock:
             case ftk::Key::NumLock:
@@ -249,131 +284,18 @@ namespace djv
                 p.shortcut.modifiers));
         }
 
-        struct ShortcutWidget::Private
-        {
-            ftk::KeyShortcut shortcut;
-            std::shared_ptr<ShortcutEdit> edit;
-            std::shared_ptr<ftk::ToolButton> clearButton;
-            std::shared_ptr<ftk::HorizontalLayout> layout;
-            std::function<void(const ftk::KeyShortcut&)> callback;
-        };
-
-        void ShortcutWidget::_init(
-            const std::shared_ptr<ftk::Context>& context,
-            const std::shared_ptr<IWidget>& parent)
-        {
-            IWidget::_init(context, "djv::ui::ShortcutWidget", parent);
-            FTK_P();
-
-            p.edit = ShortcutEdit::create(context);
-
-            p.clearButton = ftk::ToolButton::create(context);
-            p.clearButton->setIcon("ClearSmall");
-            p.clearButton->setTooltip("Clear the shortcut");
-
-            p.layout = ftk::HorizontalLayout::create(context);
-
-            _setWidget(p.layout);
-            p.layout->setSpacingRole(ftk::SizeRole::SpacingTool);
-            p.edit->setParent(p.layout);
-            p.clearButton->setParent(p.layout);
-
-            p.edit->setCallback(
-                [this](const ftk::KeyShortcut& value)
-                {
-                    FTK_P();
-                    p.shortcut = value;
-                    if (p.callback)
-                    {
-                        p.callback(p.shortcut);
-                    }
-                });
-
-            p.clearButton->setClickedCallback(
-                [this]
-                {
-                    FTK_P();
-                    p.shortcut = ftk::KeyShortcut();
-                    p.edit->setShortcut(p.shortcut);
-                    if (p.callback)
-                    {
-                        p.callback(p.shortcut);
-                    }
-                });
-        }
-
-        ShortcutWidget::ShortcutWidget() :
-            _p(new Private)
-        {}
-
-        ShortcutWidget::~ShortcutWidget()
-        {}
-
-        std::shared_ptr<ShortcutWidget> ShortcutWidget::create(
-            const std::shared_ptr<ftk::Context>& context,
-            const std::shared_ptr<IWidget>& parent)
-        {
-            auto out = std::shared_ptr<ShortcutWidget>(new ShortcutWidget);
-            out->_init(context, parent);
-            return out;
-        }
-
-        void ShortcutWidget::setShortcut(const ftk::KeyShortcut& value)
-        {
-            FTK_P();
-            if (value == p.shortcut)
-                return;
-            p.shortcut = value;
-            p.edit->setShortcut(value);
-        }
-
-        void ShortcutWidget::setCallback(const std::function<void(const ftk::KeyShortcut&)>& value)
-        {
-            FTK_P();
-            p.callback = value;
-        }
-
-        void ShortcutWidget::setCollision(bool value)
-        {
-            _p->edit->setCollision(value);
-        }
-
         struct ShortcutsSettingsWidget::Private
         {
             std::shared_ptr<models::SettingsModel> settings;
-            struct Group
-            {
-                std::string name;
-                std::vector<models::Shortcut> shortcuts;
+            models::ShortcutsSettings shortcuts;
+            std::string search;
 
-                bool operator == (const Group& other) const
-                {
-                    bool out =
-                        name == other.name &&
-                        shortcuts.size() == other.shortcuts.size();
-                    for (size_t i = 0; out && i < shortcuts.size(); ++i)
-                    {
-                        out &= shortcuts[i].name == other.shortcuts[i].name;
-                    }
-                    return out;
-                }
-
-                bool operator != (const Group& other) const
-                {
-                    return !(*this == other);
-                }
-            };
-            std::vector<Group> groups;
+            // The shortcut of each row of the table, empty for a heading.
+            std::vector<std::string> rowNames;
 
             std::shared_ptr<ftk::SearchBox> searchBox;
-            std::map<std::string, std::string> searchText;
-            std::map<std::string, std::shared_ptr<ftk::Spacer> > groupSpacers;
-            std::map<std::string, std::shared_ptr<ftk::Label> > groupLabels;
-            std::map<std::string, std::shared_ptr<ftk::Label> > labels;
-            std::map<std::string, std::shared_ptr<ShortcutWidget> > primaryWidgets;
-            std::map<std::string, std::shared_ptr<ShortcutWidget> > secondaryWidgets;
+            std::shared_ptr<ftk::TableWidget> table;
             std::shared_ptr<ftk::VerticalLayout> layout;
-            std::shared_ptr<ftk::GridLayout> shortcutsLayout;
 
             std::shared_ptr<ftk::Observer<models::ShortcutsSettings> > settingsObserver;
         };
@@ -392,18 +314,35 @@ namespace djv
             p.searchBox->setTooltip("Search the shortcuts");
             ftk::setScreenshotTag(p.searchBox, "Shortcuts.Search");
 
+            // The shortcuts are a table of text, with an editor put over a
+            // shortcut when it is clicked. A field and a clear button for
+            // every shortcut made the list hard to read.
+            p.table = ftk::TableWidget::create(context);
+            p.table->setHeadingRole(ftk::ColorRole::None);
+            p.table->setHeadingLine(true);
+            p.table->setColumnLines(true);
+            p.table->setTooltip(
+                "Click a shortcut to change it. Each action has a\n"
+                "primary and a secondary shortcut.");
+            ftk::setScreenshotTag(p.table, "Shortcuts.Table");
+
             p.layout = ftk::VerticalLayout::create(context);
 
             _setWidget(p.layout);
-            p.layout->setSpacingRole(ftk::SizeRole::None);
+            p.layout->setSpacingRole(ftk::SizeRole::Spacing);
             p.searchBox->setParent(p.layout);
-            p.shortcutsLayout = ftk::GridLayout::create(context, p.layout);
-            p.shortcutsLayout->setSpacingRole(ftk::SizeRole::SpacingTool);
+            p.table->setParent(p.layout);
 
             p.searchBox->setCallback(
                 [this](const std::string& value)
                 {
                     _searchUpdate(value);
+                });
+
+            p.table->setCallback(
+                [this](const ftk::TableIndex& index)
+                {
+                    _edit(index);
                 });
 
             p.settingsObserver = ftk::Observer<models::ShortcutsSettings>::create(
@@ -434,11 +373,29 @@ namespace djv
         void ShortcutsSettingsWidget::_widgetUpdate(const models::ShortcutsSettings& settings)
         {
             FTK_P();
+            p.shortcuts = settings;
+            _tableUpdate();
+        }
 
-            // Create groups of shortcuts. The groups are sorted by name
-            // after they are created.
-            std::vector<Private::Group> groups;
-            for (const auto& shortcut : settings.shortcuts)
+        void ShortcutsSettingsWidget::_searchUpdate(const std::string& value)
+        {
+            FTK_P();
+            p.search = value;
+            _tableUpdate();
+        }
+
+        void ShortcutsSettingsWidget::_tableUpdate()
+        {
+            FTK_P();
+
+            // Create groups of shortcuts, sorted by name.
+            struct Group
+            {
+                std::string name;
+                std::vector<models::Shortcut> shortcuts;
+            };
+            std::vector<Group> groups;
+            for (const auto& shortcut : p.shortcuts.shortcuts)
             {
                 const auto s = ftk::split(shortcut.name, '/');
                 if (!s.empty())
@@ -447,41 +404,31 @@ namespace djv
                     auto i = std::find_if(
                         groups.begin(),
                         groups.end(),
-                        [name](const Private::Group& value)
+                        [name](const Group& value)
                         {
                             return name == value.name;
                         });
-                    if ((!groups.empty() && i == groups.end()) ||
-                        groups.empty())
+                    if (i == groups.end())
                     {
-                        Private::Group group;
+                        Group group;
                         group.name = name;
                         groups.push_back(group);
+                        i = groups.end() - 1;
                     }
-                    i = std::find_if(
-                        groups.begin(),
-                        groups.end(),
-                        [name](const Private::Group& value)
-                        {
-                            return name == value.name;
-                        });
-                    if (i != groups.end())
-                    {
-                        i->shortcuts.push_back(shortcut);
-                    }
+                    i->shortcuts.push_back(shortcut);
                 }
             }
             std::sort(
                 groups.begin(),
                 groups.end(),
-                [](const Private::Group& a, const Private::Group& b)
+                [](const Group& a, const Group& b)
                 {
                     return a.name < b.name;
                 });
 
             // Find collisions.
             std::map<std::string, int> collisions;
-            for (const auto& i : settings.shortcuts)
+            for (const auto& i : p.shortcuts.shortcuts)
             {
                 if (i.primary.key != ftk::Key::Unknown)
                 {
@@ -492,216 +439,106 @@ namespace djv
                     collisions[to_string(i.secondary)]++;
                 }
             }
-
-            if (groups != p.groups)
-            {
-                p.groups = groups;
-
-                p.searchText.clear();
-                p.groupSpacers.clear();
-                p.groupLabels.clear();
-                p.primaryWidgets.clear();
-                p.secondaryWidgets.clear();
-                p.shortcutsLayout->clear();
-
-                // Create the new widgets.
-                if (auto context = getContext())
+            const auto cell = [&collisions](const ftk::KeyShortcut& value)
                 {
-                    int column = 0;
-                    for (int i = 0; i < static_cast<int>(p.groups.size()); ++i)
+                    ftk::TableCell out(
+                        ftk::getShortcutLabel(value.key, value.modifiers),
+                        true);
+                    if (const auto i = collisions.find(to_string(value));
+                        i != collisions.end() && i->second > 1)
                     {
-                        const auto& group = p.groups[i];
-
-                        auto spacer = ftk::Spacer::create(context, ftk::Orientation::Vertical, p.shortcutsLayout);
-                        spacer->setSpacingRole(ftk::SizeRole::SpacingSmall);
-                        p.groupSpacers[group.name] = spacer;
-                        p.shortcutsLayout->setGridPos(spacer, column, 0);
-                        ++column;
-
-                        auto groupLabel = ftk::Label::create(context, ftk::toUpper(group.name), p.shortcutsLayout);
-                        groupLabel->setFont(ftk::FontType::Bold);
-                        groupLabel->setMarginRole(ftk::SizeRole::MarginInside);
-                        p.groupLabels[group.name] = groupLabel;
-                        p.shortcutsLayout->setGridPos(groupLabel, column, 0);
-                        ++column;
-
-                        for (int j = 0; j < static_cast<int>(group.shortcuts.size()); ++j)
-                        {
-                            const auto& shortcut = group.shortcuts[j];
-                            p.searchText[shortcut.name] = group.name + " " + shortcut.text;
-
-                            auto label = ftk::Label::create(context, shortcut.text + ":", p.shortcutsLayout);
-                            label->setMarginRole(ftk::SizeRole::MarginInside);
-                            label->setHStretch(ftk::Stretch::Expanding);
-                            p.labels[shortcut.name] = label;
-                            p.shortcutsLayout->setGridPos(label, column, 0);
-
-                            auto primaryWidget = ShortcutWidget::create(context, p.shortcutsLayout);
-                            primaryWidget->setShortcut(shortcut.primary);
-                            primaryWidget->setTooltip("Primary shortcut");
-                            p.primaryWidgets[shortcut.name] = primaryWidget;
-                            p.shortcutsLayout->setGridPos(primaryWidget, column, 1);
-                            primaryWidget->setCallback(
-                                [this, shortcut](const ftk::KeyShortcut& value)
-                                {
-                                    FTK_P();
-                                    auto settings = p.settings->getShortcuts();
-                                    const auto i = std::find_if(
-                                        settings.shortcuts.begin(),
-                                        settings.shortcuts.end(),
-                                        [shortcut](const models::Shortcut& other)
-                                        {
-                                            return shortcut.name == other.name;
-                                        });
-                                    if (i != settings.shortcuts.end())
-                                    {
-                                        i->primary = value;
-                                        p.settings->setShortcuts(settings);
-                                    }
-                                });
-                            if (0 == i && 0 == j)
-                            {
-                                ftk::setScreenshotTag(primaryWidget, "Shortcuts.Primary");
-                            }
-
-                            auto secondaryWidget = ShortcutWidget::create(context, p.shortcutsLayout);
-                            secondaryWidget->setShortcut(shortcut.secondary);
-                            secondaryWidget->setTooltip("Secondary shortcut");
-                            p.secondaryWidgets[shortcut.name] = secondaryWidget;
-                            p.shortcutsLayout->setGridPos(secondaryWidget, column, 2);
-                            secondaryWidget->setCallback(
-                                [this, shortcut](const ftk::KeyShortcut& value)
-                                {
-                                    FTK_P();
-                                    auto settings = p.settings->getShortcuts();
-                                    const auto i = std::find_if(
-                                        settings.shortcuts.begin(),
-                                        settings.shortcuts.end(),
-                                        [shortcut](const models::Shortcut& other)
-                                        {
-                                            return shortcut.name == other.name;
-                                        });
-                                    if (i != settings.shortcuts.end())
-                                    {
-                                        i->secondary = value;
-                                        p.settings->setShortcuts(settings);
-                                    }
-                                });
-                            if (0 == i && 0 == j)
-                            {
-                                ftk::setScreenshotTag(secondaryWidget, "Shortcuts.Secondary");
-                            }
-
-                            ++column;
-                        }
+                        out.colorRole = ftk::ColorRole::Red;
                     }
-                }
-            }
+                    return out;
+                };
 
-            // Update the values.
-            for (const auto& group : p.groups)
+            // Create the rows: a heading and the shortcuts for each
+            // group. A group with nothing that matches the search is
+            // hidden with its heading.
+            std::vector<ftk::TableRow> rows;
+            p.rowNames.clear();
+            for (const auto& group : groups)
             {
+                const size_t heading = rows.size();
+                rows.push_back(ftk::TableRow({ ftk::TableCell(group.name) }, true));
+                rows.back().visible = false;
+                p.rowNames.push_back(std::string());
                 for (const auto& shortcut : group.shortcuts)
                 {
-                    // The saved shortcut. Both widgets show the same one, so
-                    // it is looked up once rather than per widget.
-                    const auto j = std::find_if(
-                        settings.shortcuts.begin(),
-                        settings.shortcuts.end(),
-                        [shortcut](const models::Shortcut& value)
+                    ftk::TableRow row(
                         {
-                            return shortcut.name == value.name;
+                            ftk::TableCell(shortcut.text + ":"),
+                            cell(shortcut.primary),
+                            cell(shortcut.secondary)
                         });
-                    if (j == settings.shortcuts.end())
-                    {
-                        continue;
-                    }
-
-                    if (auto i = p.primaryWidgets.find(shortcut.name);
-                        i != p.primaryWidgets.end())
-                    {
-                        i->second->setShortcut(j->primary);
-                        bool collision = false;
-                        if (auto k = collisions.find(to_string(j->primary));
-                            k != collisions.end())
-                        {
-                            collision = k->second > 1;
-                        }
-                        i->second->setCollision(collision);
-                    }
-
-                    if (auto i = p.secondaryWidgets.find(shortcut.name);
-                        i != p.secondaryWidgets.end())
-                    {
-                        i->second->setShortcut(j->secondary);
-                        bool collision = false;
-                        if (auto k = collisions.find(to_string(j->secondary));
-                            k != collisions.end())
-                        {
-                            collision = k->second > 1;
-                        }
-                        i->second->setCollision(collision);
-                    }
+                    row.visible =
+                        p.search.empty() ||
+                        ftk::contains(
+                            group.name + " " + shortcut.text,
+                            p.search,
+                            ftk::CaseCompare::Insensitive);
+                    rows[heading].visible = rows[heading].visible || row.visible;
+                    rows.push_back(row);
+                    p.rowNames.push_back(shortcut.name);
                 }
             }
+            p.table->setRows(rows);
+            // The names are as wide as the longest of them and the two
+            // shortcuts share the rest.
+            p.table->setColumnStretch(1, true);
+            p.table->setColumnStretch(2, true);
         }
 
-        void ShortcutsSettingsWidget::_searchUpdate(const std::string& value)
+        void ShortcutsSettingsWidget::_edit(const ftk::TableIndex& index)
         {
             FTK_P();
-
-            std::map<std::string, bool> visible;
-            for (const auto& i : p.searchText)
-            {
-                const bool v =
-                    !value.empty() ?
-                    ftk::contains(i.second, value, ftk::CaseCompare::Insensitive) :
-                    true;
-                visible[i.first] = v;
-            }
-
-            for (const auto& i : p.primaryWidgets)
-            {
-                if (const auto j = visible.find(i.first); j != visible.end())
+            if (index.row < 0 || index.row >= static_cast<int>(p.rowNames.size()))
+                return;
+            const std::string name = p.rowNames[index.row];
+            const bool primary = 1 == index.column;
+            const auto i = std::find_if(
+                p.shortcuts.shortcuts.begin(),
+                p.shortcuts.shortcuts.end(),
+                [name](const models::Shortcut& value)
                 {
-                    i.second->setVisible(j->second);
-                }
-            }
-
-            for (const auto& i : p.secondaryWidgets)
+                    return name == value.name;
+                });
+            if (i == p.shortcuts.shortcuts.end())
+                return;
+            if (auto context = getContext())
             {
-                if (const auto j = visible.find(i.first); j != visible.end())
-                {
-                    i.second->setVisible(j->second);
-                }
-            }
-
-            for (const auto& i : p.labels)
-            {
-                if (const auto j = visible.find(i.first); j != visible.end())
-                {
-                    i.second->setVisible(j->second);
-                }
-            }
-
-            for (const auto& i : p.groups)
-            {
-                bool v = false;
-                for (const auto& j : i.shortcuts)
-                {
-                    if (const auto k = visible.find(j.name); k != visible.end())
+                auto widget = ShortcutEdit::create(context);
+                widget->setShortcut(primary ? i->primary : i->secondary);
+                widget->setCallback(
+                    [this, name, primary](const ftk::KeyShortcut& value)
                     {
-                        v |= k->second;
-                    }
-                }
-                if (auto j = p.groupSpacers.find(i.name); j != p.groupSpacers.end())
-                {
-                    j->second->setVisible(v);
-                }
-                if (auto k = p.groupLabels.find(i.name); k != p.groupLabels.end())
-                {
-                    k->second->setVisible(v);
-                }
+                        FTK_P();
+                        // Close the editor first: the settings come back
+                        // through the observer and update the table.
+                        p.table->closeEditor();
+                        auto settings = p.settings->getShortcuts();
+                        const auto i = std::find_if(
+                            settings.shortcuts.begin(),
+                            settings.shortcuts.end(),
+                            [name](const models::Shortcut& other)
+                            {
+                                return name == other.name;
+                            });
+                        if (i != settings.shortcuts.end())
+                        {
+                            if (primary)
+                            {
+                                i->primary = value;
+                            }
+                            else
+                            {
+                                i->secondary = value;
+                            }
+                            p.settings->setShortcuts(settings);
+                        }
+                    });
+                p.table->openEditor(index, widget);
+                widget->takeKeyFocus();
             }
         }
     }

@@ -11,6 +11,11 @@
 
 #include <ftk/UI/IContainer.h>
 
+namespace ftk
+{
+    struct TableIndex;
+}
+
 namespace djv
 {
     namespace models
@@ -306,35 +311,6 @@ namespace djv
             FTK_PRIVATE();
         };
 
-        //! Keyboard shortcut widget.
-        class DJV_UI_API_TYPE ShortcutWidget : public ftk::IContainer
-        {
-            FTK_NON_COPYABLE(ShortcutWidget);
-
-        protected:
-            void _init(
-                const std::shared_ptr<ftk::Context>&,
-                const std::shared_ptr<IWidget>& parent);
-
-            ShortcutWidget();
-
-        public:
-            DJV_UI_API virtual ~ShortcutWidget();
-
-            DJV_UI_API static std::shared_ptr<ShortcutWidget> create(
-                const std::shared_ptr<ftk::Context>&,
-                const std::shared_ptr<IWidget>& parent = nullptr);
-
-            DJV_UI_API void setShortcut(const ftk::KeyShortcut&);
-            DJV_UI_API void setCallback(const std::function<void(const ftk::KeyShortcut&)>&);
-            DJV_UI_API void setCollision(bool);
-
-        private:
-            void _widgetUpdate();
-
-            FTK_PRIVATE();
-        };
-
         //! Keyboard shortcuts settings widget.
         class DJV_UI_API_TYPE ShortcutsSettingsWidget : public ISettingsWidget
         {
@@ -359,6 +335,8 @@ namespace djv
         private:
             void _widgetUpdate(const models::ShortcutsSettings&);
             void _searchUpdate(const std::string&);
+            void _tableUpdate();
+            void _edit(const ftk::TableIndex&);
 
             FTK_PRIVATE();
         };

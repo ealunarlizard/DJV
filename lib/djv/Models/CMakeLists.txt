@@ -19,6 +19,7 @@ set(HEADERS
     Review.h
     Stroke.h
     SyncModel.h
+    SettingsKeys.h
     SettingsModel.h
     ShellCommand.h
     Shortcuts.h
@@ -48,6 +49,7 @@ set(SOURCE
     Review.cpp
     Stroke.cpp
     SyncModel.cpp
+    SettingsKeys.cpp
     SettingsModel.cpp
     ShellCommand.cpp
     Shortcuts.cpp

@@ -30,6 +30,10 @@ Changes:
   name) is followed, and every step of a link is in the System Log.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
+* Export now has options for specifying the width or a custom size.
+* Add a tile layout option to the file browser.
+* Add a recent files dialog.
+* Add options for clearing recent files.
 
 Fixes:
 * Fix for the levels of 10-bit and deeper YUV movies read as RGB.
@@ -37,6 +41,8 @@ Fixes:
 * Fix for thumbnails of files that are overwritten.
 * Fix for a crash when a Python script exits on Linux.
 * Fix for slow playback and export on Linux when the window is covered.
+* Exports round the output movie size to an even number (except for source and
+  custom settings).
 
 ## 3.7.4
 

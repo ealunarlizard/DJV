@@ -53,10 +53,15 @@ set(HEADERS
     WindowToolBar.h
     ViewTool.h)
 set(HEADERS_PRIVATE
+    AppPrivate.h
     ShellAssociations.h)
 
 set(SOURCE
     App.cpp
+    AppFiles.cpp
+    AppModels.cpp
+    AppReview.cpp
+    AppSync.cpp
     AudioActions.cpp
     AudioMenu.cpp
     AudioTool.cpp

@@ -103,10 +103,28 @@ namespace djv
             {
                 if (step.contains("open"))
                 {
-                    ftk::Path path(step.at("open").get<std::string>());
-                    if (path.hasSeqWildcard())
-                        path = ftk::expandSeq(path);
-                    app->open(path);
+                    // A file, or a list of files to open together the
+                    // way several chosen in the file browser are.
+                    const auto& v = step.at("open");
+                    if (v.is_array())
+                    {
+                        std::vector<ftk::Path> paths;
+                        for (const auto& i : v)
+                        {
+                            ftk::Path path(i.get<std::string>());
+                            if (path.hasSeqWildcard())
+                                path = ftk::expandSeq(path);
+                            paths.push_back(path);
+                        }
+                        app->open(paths);
+                    }
+                    else
+                    {
+                        ftk::Path path(v.get<std::string>());
+                        if (path.hasSeqWildcard())
+                            path = ftk::expandSeq(path);
+                        app->open(path);
+                    }
                     _setExpectMedia(true);
                 }
             }
@@ -712,6 +730,21 @@ namespace djv
                                 options.bellows[it.key()] = it.value().get<bool>();
                             model->setOptions(options);
                         }
+                        if (v.contains("layout"))
+                        {
+                            // "List" or "Tiles".
+                            auto options = model->getOptions();
+                            const std::string s = v.at("layout").get<std::string>();
+                            if (!from_string(s, options.layout))
+                                _note("unrecognized fileBrowser layout '" + s + "'");
+                            model->setOptions(options);
+                        }
+                        if (v.contains("open") && !v.at("open").get<bool>())
+                        {
+                            // Configure the browser without opening it, for a
+                            // shot of something else that uses its options.
+                            return true;
+                        }
                     }
                 }
                 app->openDialog();
@@ -853,7 +886,17 @@ namespace djv
             if (!app)
                 return std::string();
             auto player = app->observePlayer()->get();
-            if (!player || _ready())
+            if (!player)
+            {
+                // A file whose timeline cannot be created -- a format this
+                // build has no reader for, say -- is closed again on the
+                // next tick, so an open with nothing left in the files model
+                // is one that failed; the reason went to the log.
+                return app->getFilesModel()->getFiles().empty() ?
+                    std::string("the file could not be opened; see the log") :
+                    std::string();
+            }
+            if (_ready())
                 return std::string();
             // A player's information is worked out when its timeline is read,
             // so a player with neither video nor audio will never gain them:

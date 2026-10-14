@@ -138,7 +138,6 @@ namespace djv
             void _notesStart(const OTIO_NS::RationalTime&, const OTIO_NS::RationalTime&);
             void _drawNotes(const ftk::Box2I&, const ftk::DrawEvent&);
 
-            void _videoUpdate();
             void _toastUpdate();
             void _compareUpdate();
             void _hudUpdate();

@@ -6,6 +6,7 @@ set(HEADERS
     FrameRangePopup.h
     Init.h
     ColorResetDialog.h
+    RecentFilesDialog.h
     SeparateAudioDialog.h
     SettingsWidgets.h
     SetupDialog.h
@@ -20,7 +21,8 @@ set(HEADERS
     MagnifyWidget.h
     PasswordEdit.h
     ViewWidgets.h
-    Viewport.h)
+    Viewport.h
+    ViewportBinding.h)
 set(HEADERS_PRIVATE)
 
 set(SOURCE
@@ -31,6 +33,7 @@ set(SOURCE
     FrameRangePopup.cpp
     Init.cpp
     ColorResetDialog.cpp
+    RecentFilesDialog.cpp
     SeparateAudioDialog.cpp
     SettingsWidgets.cpp
     SetupDialog.cpp
@@ -47,7 +50,8 @@ set(SOURCE
     MagnifyWidget.cpp
     PasswordEdit.cpp
     ViewWidgets.cpp
-    Viewport.cpp)
+    Viewport.cpp
+    ViewportBinding.cpp)
 
 add_library(djvUI ${HEADERS} ${HEADERS_PRIVATE} ${SOURCE})
 # Private when building, so this library's own API is dllexport here and
