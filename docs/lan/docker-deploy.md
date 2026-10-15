@@ -17,7 +17,7 @@ portal is in [portal.md](portal.md).
 
 | File | What |
 | --- | --- |
-| `djv-sync-server-<version>.tar` | The Docker image (Node 24 on Alpine, with the server). `start.ps1` loads it. |
+| `djv-sync-server-<version>.tar` | The Docker image (Node 24 on Alpine, with the server, and the DJV packages it offers at `/app`). `start.ps1` loads it. |
 | `docker-compose.yml` | The container: port 8877, the `data` folder, the media folder, the two secrets, restarted with Docker. |
 | `.env.example` | The port, the image version, the media folder, the time zone, and the database locking mode. `start.ps1` copies it to `.env`. |
 | `new-secrets.ps1` | Makes the passwords in `secrets\`. |
@@ -40,6 +40,24 @@ cd <djv source>\server
 This builds the image `djv-sync-server:<version>`, tagged `latest` too, and
 writes `..\dist\djv-sync-server-<version>.zip`. The version comes from
 `server\package.json`.
+
+### DJV in the image
+
+The image also carries DJV, which the server offers the studio at
+`http://192.168.0.100:8877/app` (see *Downloading DJV* below). Build the
+DJV package first, so that `build-package.ps1` finds it:
+
+```powershell
+cd <folder above the DJV source>
+<djv source>\package-win.bat <djv source> Release
+```
+
+`build-package.ps1` then takes `djv-<version>-windows-*.exe` and `.zip`
+from `build-Release` beside the source, for the version in
+`lib\djv\Models\Version.h`. Set `DJV_BUILD_DIR` if the build is elsewhere,
+or name the files with `-Djv <file>, <file>`. It stops when it finds
+none. `-NoDjv` builds an image without DJV, whose `/app` says there is
+nothing to download.
 
 ### Pushing the image to a private registry
 
@@ -124,7 +142,8 @@ reached, it starts the copy Docker already has, or else loads the package's
       - **Share user**: `djv`;
       - **Expected DJV version**: the version the studio runs.
    2. Under **Users**, add each reviewer with a password.
-7. **Set up the PCs**, as the manual's *Studio network* page says. DJV's
+7. **Set up the PCs**, as the manual's *Studio network* page says. Each PC
+   gets DJV from `http://192.168.0.100:8877/app`. DJV's
    default server address is the one it was built with: `DJV_SYNC_SERVER` in
    the `.env` at the top of the DJV source (see `.env.example`). With the
    studio's address there, a reviewer only types their user name and
@@ -221,6 +240,26 @@ On a Linux host, set `DB_EXCLUSIVE=0` in `.env`.
 
 With `DJV_SYNC_IMAGE` set, step 1 is not needed unless the scripts
 changed: set the new version and run `.\start.ps1`, which pulls it.
+
+### Downloading DJV
+
+`http://192.168.0.100:8877/app` offers the DJV that the image carries,
+with no sign-in: the Windows installer of the newest version, its zip, and
+how to set DJV to this server. `/app/latest` always links the installer,
+so it can be sent round once and stays good. The portal links to the page.
+
+A new DJV reaches the studio with an update of the server:
+
+1. Build the DJV package, then the server's package (see *DJV in the
+   image*), with `-Push` when the dev server pulls from a registry.
+2. On the dev server, run `.\start.ps1`; with a package instead of a
+   registry, unzip it over the folder first.
+
+The server's version need not change. `start.ps1` pulls the image again
+from a registry, and loads the package's `.tar` at every start, so a
+package built again under the same version replaces the image Docker has.
+The server logs which DJV it offers when it starts. Remember to set
+**Expected DJV version** on the admin page to the new version.
 
 ### From 2.1 to 2.2
 

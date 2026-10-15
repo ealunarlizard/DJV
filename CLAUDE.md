@@ -223,6 +223,11 @@ The review markers (`MarkersModel`) can be shared live through
     the administrator, may see or join one (403 `not-member`); a name with no row is
     claimed by its first user, and one from before 2.1 is open to all.
     Deleting a session sends `removed` on its streams, and DJV stops.
+  - `/app` (`server/app.html`) offers DJV itself, with no sign-in, from
+    `DOWNLOADS_DIR`; `/app/latest` redirects to the newest version's
+    Windows installer. The image carries the packages in `/downloads`:
+    `build-package.ps1` passes the DJV build's installer and zip as the
+    `downloads` build context, so updating the server brings the new DJV.
   - `SyncMedia::compare` is a session's second video, opened as B by
     `App::loadSyncMedia`.
   - Review links, `djv://session/<s>?server=<url>`: `models::DeepLink`

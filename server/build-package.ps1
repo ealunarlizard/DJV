@@ -19,6 +19,14 @@ output. The zip holds:
 
 Never the secrets, the data or the backups of a deployment made in deploy\.
 
+The image also carries DJV itself, which the server offers the studio at
+http://<server>:8877/app: updating the server is what brings everyone the
+new DJV. Unless -Djv names the packages, they are the Windows installer and
+zip of the version in lib\djv\Models\Version.h, from the folder
+package-win.bat builds them in: DJV_BUILD_DIR when set, else build-Release
+beside the repository. The script stops when there are none, rather than
+quietly build an image with no DJV; -NoDjv builds one on purpose.
+
 With -Push, the image is also pushed to a registry under the given
 repository, as <version> and latest, and the package's .env.example names
 it as DJV_SYNC_IMAGE, so that start.ps1 pulls it from there. The .tar stays
@@ -30,16 +38,29 @@ packages).
 The repository to push the image to, for example
 ghcr.io/<organization>/djv-sync-server. The registry wants it in lower case.
 
+.PARAMETER Djv
+The DJV packages to offer at /app, such as
+djv-3.7.5-windows-amd64.exe and its .zip, instead of the ones found in the
+build folder.
+
+.PARAMETER NoDjv
+Build the image without DJV: /app then says there is nothing to download.
+
 .EXAMPLE
 .\build-package.ps1
 
 .EXAMPLE
 .\build-package.ps1 -Push ghcr.io/<organization>/djv-sync-server
+
+.EXAMPLE
+.\build-package.ps1 -Djv D:\builds\djv-3.7.5-windows-amd64.exe
 #>
 [CmdletBinding()]
 param(
     [string]$OutDir = (Join-Path $PSScriptRoot '..\dist'),
-    [string]$Push
+    [string]$Push,
+    [string[]]$Djv,
+    [switch]$NoDjv
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,8 +80,63 @@ $version = (Get-Content (Join-Path $PSScriptRoot 'package.json') -Raw | ConvertF
 $image = "djv-sync-server:$version"
 $name = "djv-sync-server-$version"
 
-Write-Host "Building $image ..."
-Invoke-Docker build --pull -t $image -t 'djv-sync-server:latest' $PSScriptRoot
+# DJV's version as CMake reads it, and so as CPack writes it into the names
+# of the packages, in lower case.
+function Get-DjvVersion {
+    $header = Get-Content (Join-Path $PSScriptRoot '..\lib\djv\Models\Version.h') -Raw
+    $parts = foreach ($macro in 'MAJOR', 'MINOR', 'PATCH') {
+        if ($header -notmatch "#define\s+DJV_VERSION_$macro\s+(\d+)") {
+            throw "lib\djv\Models\Version.h has no DJV_VERSION_$macro."
+        }
+        $Matches[1]
+    }
+    $dev = if ($header -match '#define\s+DJV_VERSION_DEV\s+"([^"]*)"') { $Matches[1] } else { '' }
+    return (($parts -join '.') + $dev).ToLowerInvariant()
+}
+
+# The DJV packages go to the image through a folder of their own, given to
+# Docker as the "downloads" build context, so that nothing is copied into
+# the source tree and the server's own build context stays as it is.
+$downloads = Join-Path ([IO.Path]::GetTempPath()) "djv-sync-downloads-$PID"
+if (Test-Path $downloads) {
+    Remove-Item -Recurse -Force $downloads
+}
+New-Item -ItemType Directory -Path $downloads | Out-Null
+try {
+    if (-not $NoDjv) {
+        if (-not $Djv) {
+            $djvVersion = Get-DjvVersion
+            $buildDir = if ($env:DJV_BUILD_DIR) { $env:DJV_BUILD_DIR } else { Join-Path $PSScriptRoot '..\..\build-Release' }
+            $Djv = @(Get-ChildItem -LiteralPath $buildDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "djv-$djvVersion-windows-*.exe" -or $_.Name -like "djv-$djvVersion-windows-*.zip" } |
+                ForEach-Object { $_.FullName })
+            if (-not $Djv) {
+                throw "There is no DJV $djvVersion package (djv-$djvVersion-windows-*.exe or .zip) in $buildDir. Make one with package-win.bat, set DJV_BUILD_DIR to the folder it is in, name the files with -Djv, or build without DJV with -NoDjv."
+            }
+        }
+        foreach ($file in $Djv) {
+            $item = Get-Item -LiteralPath $file
+            # The server only offers plain names (server.js,
+            # DOWNLOAD_NAME_PATTERN): one it would not serve is refused here,
+            # rather than be missing from the page.
+            if ($item.Name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$') {
+                throw "$($item.Name): the server only offers files named with letters, digits, '.', '_' and '-'."
+            }
+            Copy-Item -LiteralPath $item.FullName $downloads
+            Write-Host ("DJV for /app: {0} ({1:N0} MB)" -f $item.Name, ($item.Length / 1MB))
+        }
+        if (-not ($Djv | Where-Object { $_ -like '*.exe' })) {
+            Write-Warning 'No installer among the DJV packages: /app offers the zip.'
+        }
+    } else {
+        Write-Host 'Building without DJV: /app will have nothing to download.'
+    }
+
+    Write-Host "Building $image ..."
+    Invoke-Docker build --pull --build-context "downloads=$downloads" -t $image -t 'djv-sync-server:latest' $PSScriptRoot
+} finally {
+    Remove-Item -Recurse -Force $downloads -ErrorAction SilentlyContinue
+}
 
 if ($Push) {
     # Both tags are pushed: <version> for the deployments that pin it, as a

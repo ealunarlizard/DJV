@@ -27,6 +27,12 @@ server; the review links and two-video sessions need this DJV.
   private registry, such as GitHub's, which `start.ps1` pulls; and
   `build-package.ps1 -Push <repository>`, which pushes it. Without it, the
   package's `.tar` is loaded as before. (CR-025)
+- DJV to download from the server, at `http://<server>:8877/app`, with no
+  sign-in: the Windows installer of the newest version, its zip, and how
+  to set DJV up; `/app/latest` always links the newest installer. The
+  server's image carries the packages, which `build-package.ps1` takes
+  from the DJV build (`-Djv`, `-NoDjv`), so an update of the server brings
+  the new DJV. The portal links to it. (CR-026)
 
 - The review portal, at the server's address, used with the same accounts
   as DJV (`server/portal.html`, `docs/lan/portal.md`). (CR-020)

@@ -32,7 +32,7 @@
 
 import { createServer as createHttpServer } from 'node:http';
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
+  createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
 } from 'node:fs';
 import { link, mkdir, open, rename, rm, unlink } from 'node:fs/promises';
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
@@ -99,6 +99,14 @@ const MAX_MEDIA_PATH = 4096;
 // The stream is kept open with a comment this often, which also tells a
 // client that a silent stream has gone. DJV waits three times as long.
 const HEARTBEAT_MS = 15000;
+
+// The DJV packages offered at /app are named as CPack names them
+// (cmake/Modules/Package.cmake): djv-<version>-<system>-<arch>.<ext>, the
+// version being, say, 3.7.5 or 3.7.5-dev. Only plain names are served at
+// all, so that a name can never reach outside the folder and goes into a
+// header as it is.
+const DOWNLOAD_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+const PACKAGE_PATTERN = /^djv-(\d[A-Za-z0-9.-]*)-([a-z0-9]+)-([a-z0-9_]+)\.([a-z0-9.]+)$/i;
 
 // The layout of the database, numbered so that a later server can tell an
 // older file and bring it up to date.
@@ -726,6 +734,87 @@ function isoTime(ms) {
   return new Date(ms).toISOString();
 }
 
+// Two package versions compared, the newer first: the numbers part by part,
+// and then a release before a build of the same numbers with a suffix
+// ("3.7.5" before "3.7.5-dev").
+function compareVersions(a, b) {
+  const split = (version) => {
+    const match = /^(\d+(?:\.\d+)*)(.*)$/.exec(version) ?? ['', '', version];
+    return { numbers: match[1] ? match[1].split('.').map(Number) : [], suffix: match[2] };
+  };
+  const x = split(a);
+  const y = split(b);
+  for (let i = 0; i < Math.max(x.numbers.length, y.numbers.length); ++i) {
+    const difference = (y.numbers[i] ?? 0) - (x.numbers[i] ?? 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  if (x.suffix !== y.suffix) {
+    return x.suffix === '' ? -1 : y.suffix === '' ? 1 : x.suffix.localeCompare(y.suffix);
+  }
+  return 0;
+}
+
+// What a package is, for the download page, from the end of its name.
+function packageKind(ext) {
+  switch (ext.toLowerCase()) {
+    case 'exe': case 'msi': return 'installer';
+    case 'zip': return 'zip';
+    case 'dmg': return 'disk image';
+    default: return 'archive';
+  }
+}
+
+// The DJV packages in the folder, the newest version first, and the one the
+// download page and /app/latest offer: the Windows installer of the newest
+// version when there is one, since the studio's PCs run Windows, and else
+// whatever that version has. A folder that is not there offers nothing.
+function listDownloads(dir) {
+  if (!dir) {
+    return { latest: null, files: [] };
+  }
+  let names = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return { latest: null, files: [] };
+  }
+  const files = [];
+  for (const file of names) {
+    if (!DOWNLOAD_NAME_PATTERN.test(file)) {
+      continue;
+    }
+    let stat;
+    try {
+      stat = statSync(path.join(dir, file));
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) {
+      continue;
+    }
+    const match = PACKAGE_PATTERN.exec(file);
+    files.push({
+      file,
+      url: `/app/${encodeURIComponent(file)}`,
+      version: match?.[1] ?? '',
+      system: match?.[2].toLowerCase() ?? '',
+      arch: match?.[3].toLowerCase() ?? '',
+      kind: packageKind(match?.[4] ?? path.extname(file).slice(1)),
+      size: stat.size,
+      modified: stat.mtime.toISOString(),
+    });
+  }
+  files.sort((a, b) => (a.version === '') - (b.version === '') ||
+    compareVersions(a.version, b.version) ||
+    b.modified.localeCompare(a.modified) || a.file.localeCompare(b.file));
+  const newest = files.filter((entry) => entry.version === files[0]?.version);
+  const latest = newest.find((entry) => entry.system === 'windows' && entry.kind === 'installer') ??
+    newest[0] ?? null;
+  return { latest, files };
+}
+
 export function createSyncServer(options = {}) {
   const dataDir = options.dataDir ?? path.join(process.cwd(), 'data');
   const dbFile = options.dbFile ?? path.join(dataDir, 'djv-sync.db');
@@ -744,6 +833,10 @@ export function createSyncServer(options = {}) {
   const mediaDir = options.mediaDir ?? '';
   // The size of an upload's pieces; smaller in the tests.
   const uploadChunk = options.uploadChunk ?? UPLOAD_CHUNK;
+  // The folder of DJV packages that /app offers. The image carries them,
+  // put in when the server's package is built (build-package.ps1), so that
+  // updating the server is also what brings a new DJV to the studio.
+  const downloadsDir = options.downloadsDir ?? '';
 
   mkdirSync(path.dirname(dbFile), { recursive: true });
   const store = new Store(dbFile, { exclusive: options.exclusive ?? false });
@@ -1513,6 +1606,41 @@ export function createSyncServer(options = {}) {
     sendJson(res, 200, { ok: true });
   }
 
+  // A package of the download folder, or with "latest", a redirect to the
+  // one the page offers, so that a link sent round the studio stays good
+  // across updates. Only a name the folder's listing has is served.
+  function sendDownload(req, res, name) {
+    const { latest, files } = listDownloads(downloadsDir);
+    if (name === 'latest') {
+      if (!latest) {
+        throw new HttpError(404, 'This server has no DJV to download yet.');
+      }
+      res.writeHead(302, { Location: latest.url, 'Cache-Control': 'no-cache' });
+      res.end();
+      return;
+    }
+    const entry = files.find((file) => file.file === name);
+    if (!entry) {
+      throw new HttpError(404, 'Not found.');
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': entry.size,
+      'Content-Disposition': `attachment; filename="${entry.file}"`,
+      'Last-Modified': new Date(entry.modified).toUTCString(),
+      'Cache-Control': 'no-cache',
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(path.join(downloadsDir, entry.file));
+    // The headers are gone already: a file that cannot be read cuts the
+    // download short, which the browser shows as failed.
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
+  }
+
   function openStream(req, res, session, since, user, identity) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -1565,9 +1693,9 @@ export function createSyncServer(options = {}) {
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     // The pages hold nothing of the server's: what they show, they ask the
     // requests for, which are where the user is checked. The portal is what
-    // the server's address opens.
+    // the server's address opens; /app is where DJV is downloaded from.
     const page = parts.length === 0 ? 'portal' : parts.length === 1 ? parts[0] : '';
-    if ((page === 'portal' || page === 'admin') && req.method === 'GET') {
+    if ((page === 'portal' || page === 'admin' || page === 'app') && req.method === 'GET') {
       const html = readFileSync(path.join(SERVER_DIR, `${page}.html`));
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1577,11 +1705,23 @@ export function createSyncServer(options = {}) {
       res.end(html);
       return;
     }
+    // DJV itself is for anyone who can reach the server, without signing
+    // in: a PC new to the studio gets DJV here before it has anything to
+    // sign in with, and DJV is open source, so nothing in it is the
+    // studio's.
+    if (parts.length === 2 && parts[0] === 'app' && (req.method === 'GET' || req.method === 'HEAD')) {
+      sendDownload(req, res, parts[1]);
+      return;
+    }
     if (parts[0] !== 'api') {
       throw new HttpError(404, 'Not found.');
     }
     if (parts.length === 2 && parts[1] === 'health' && req.method === 'GET') {
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (parts.length === 2 && parts[1] === 'downloads' && req.method === 'GET') {
+      sendJson(res, 200, listDownloads(downloadsDir));
       return;
     }
     const identity = identify(req);
@@ -1859,7 +1999,8 @@ function main() {
   const configFile = process.env.CONFIG_FILE || path.join(SERVER_DIR, 'config.json');
   const exclusive = ['1', 'true', 'yes'].includes((process.env.DB_EXCLUSIVE ?? '').toLowerCase());
   const mediaDir = process.env.MEDIA_DIR ?? '';
-  const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
+  const downloadsDir = process.env.DOWNLOADS_DIR || path.join(SERVER_DIR, 'downloads');
+  const log =(message) => console.log(`${new Date().toISOString()} ${message}`);
   let server;
   let sharePassword;
   try {
@@ -1868,7 +2009,7 @@ function main() {
     if (mediaDir && !existsSync(mediaDir)) {
       throw new ConfigError(`The media folder MEDIA_DIR (${mediaDir}) is not there.`);
     }
-    server = createSyncServer({ dataDir, dbFile, configFile, rootPassword, sharePassword, exclusive, mediaDir, log });
+    server = createSyncServer({ dataDir, dbFile, configFile, rootPassword, sharePassword, exclusive, mediaDir, downloadsDir, log });
   } catch (error) {
     // A configuration that cannot be read stops the server rather than
     // start it with none: it would have no users, and no administrator.
@@ -1877,8 +2018,12 @@ function main() {
   }
   server.listen(port, host, () => {
     log(`DJV sync server ${SERVER_VERSION} on http://${host}:${port}, sessions in ${dbFile ?? path.join(dataDir, 'djv-sync.db')}${exclusive ? ' (exclusive)' : ''}`);
-    log(`Configuration in ${configFile}; portal at http://${host}:${port}/, admin page at /admin, as "${ROOT_USER}"`);
+    log(`Configuration in ${configFile}; portal at http://${host}:${port}/, DJV download at /app, admin page at /admin, as "${ROOT_USER}"`);
     log(mediaDir ? `Videos in ${mediaDir}` : 'No media folder (MEDIA_DIR): the portal cannot list or upload videos.');
+    const { latest } = listDownloads(downloadsDir);
+    log(latest
+      ? `DJV ${latest.version || '?'} to download at /app (${latest.file}, from ${downloadsDir})`
+      : `No DJV to download at /app: ${downloadsDir} has no package.`);
 
     if (!server.config.unc) {
       log('No storage share is set; DJV clients will not map a drive. Set it on the admin page.');

@@ -967,3 +967,52 @@ then a new version in `.env` rather than a new package copied over.
 registry's image with `DJV_SYNC_IMAGE` set, and the local one without it.
 `ghcr.io/<organization>/djv-sync-server:2.2.0`, pushed by hand, pulls on the
 build machine. Still to check on the dev server: criteria 2 and 4.
+
+## CR-026: DJV to download from the server
+
+| | |
+|---|---|
+| **Status** | Implemented (image build and dev server check pending) |
+| **Requested** | 2026-10-15 |
+| **Implemented** | 2026-10-15, `feature/lan-server` (server 2.2.0) |
+
+**Description.** The studio gets DJV from the one address it already
+knows, the sync server's: `http://<server>:8877/app` offers the newest DJV.
+Nothing is uploaded by hand: the DJV packages are built into the server's
+update, so that a new DJV reaches the studio when the server is updated.
+
+**Acceptance criteria.**
+1. `/app` shows the newest DJV version with a button for its Windows
+   installer, the other packages of that version (the zip), and how to set
+   DJV to this server.
+2. `/app` and the packages need no sign-in: a PC new to the studio has
+   nothing to sign in with yet.
+3. `/app/latest` redirects to the newest installer, so a link sent round
+   stays good across updates.
+4. Only files of the download folder are served, by their plain names.
+5. `build-package.ps1` puts the packages of the DJV version being built
+   into the image, and stops when there are none unless told `-NoDjv`.
+6. A server with no packages says so on the page, and runs as before.
+
+**Implementation.**
+- **`server.js`**: `listDownloads()` reads `DOWNLOADS_DIR` (`/downloads`
+  in the image, `server/downloads` for `npm start`) and parses CPack's
+  names, `djv-<version>-<system>-<arch>.<ext>`; the newest version first,
+  its Windows `.exe` the one offered. `GET /api/downloads`,
+  `GET /app/latest` (302), `GET`/`HEAD /app/<file>`, all public.
+- **`app.html`**: the page, self-contained like the portal. The portal
+  links to it from its header and its sign-in.
+- **`Dockerfile`**: a `downloads` stage, empty unless the build passes
+  `--build-context downloads=<folder>`, copied to `/downloads`.
+- **`build-package.ps1`**: `-Djv <files>` and `-NoDjv`; by default the
+  `djv-<Version.h version>-windows-*.exe` and `.zip` from `DJV_BUILD_DIR`,
+  else `build-Release` beside the repository.
+- **Docs:** `server/README.md`, `server/deploy/README.md`,
+  `docs/lan/docker-deploy.md`, `docs/lan-setup.html`.
+
+**Verification.** The server tests pass, 44 of 44, three of them new
+(`test/downloads.test.js`). The server, started on the local
+`djv-3.7.5-dev-windows-amd64.zip`, lists it, redirects `/app/latest` to it
+and serves it whole. `build-package.ps1` parses and finds that zip from
+`Version.h`. Still to check: an image build with and without `-NoDjv`, and
+`/app` on the dev server.

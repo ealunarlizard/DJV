@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright Contributors to the DJV project. -->
+<!--
+  Where the studio gets DJV: the sync server's address with /app. It offers
+  the DJV packages the server's image carries (build-package.ps1 puts them
+  in), the Windows installer of the newest version first, and says how to
+  set DJV to this server once it is installed.
+
+  Nobody signs in here: a PC new to the studio needs DJV before anything
+  else. Self-contained, like the portal, since the studio network need not
+  reach the internet; what it shows comes from /api/downloads.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download DJV</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+  --border: #dddcd6; --accent: #2f6fdb; --bad: #c0392b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181a; --panel: #222225; --text: #ececea; --muted: #9a9a94;
+    --border: #36363a; --accent: #6b9cf0; --bad: #ef6b5b;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 18px; }
+header .right { margin-left: auto; }
+main { max-width: 720px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+section h2 { margin: 0 0 12px; font-size: 15px; }
+.hint { color: var(--muted); font-size: 13px; }
+a.button, button { display: inline-block; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; text-decoration: none; }
+a.download { background: var(--accent); border-color: var(--accent); color: #fff; font-size: 16px; font-weight: 600; padding: 10px 20px; }
+.version { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.actions { margin: 12px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+ol { margin: 0; padding-left: 20px; }
+ol li { margin-bottom: 6px; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; padding: 1px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border); overflow-wrap: anywhere; }
+table { width: 100%; border-collapse: collapse; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td.num { text-align: right; white-space: nowrap; color: var(--muted); }
+.table-wrap { overflow-x: auto; }
+.bad { color: var(--bad); }
+@media (max-width: 720px) {
+  header { padding-left: 16px; padding-right: 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Download DJV</h1>
+  <span class="right"><a class="button" href="/">Review portal</a></span>
+</header>
+<main>
+  <section id="latest" hidden>
+    <p class="version" id="latest-version"></p>
+    <div class="hint" id="latest-meta"></div>
+    <div class="actions"><a class="download" id="latest-link" href="/app/latest">Download</a></div>
+    <div class="hint" id="latest-other"></div>
+  </section>
+
+  <section id="none" hidden>
+    <h2>No DJV here yet</h2>
+    <p class="hint" id="none-text">This server has no DJV to download. Ask the administrator to update the server with a DJV package.</p>
+  </section>
+
+  <section>
+    <h2>Install and set up</h2>
+    <ol>
+      <li>Run the installer, and start DJV.</li>
+      <li>Open the <b>Settings</b> tool and its <b>Sync Server</b> section. The server must be
+        <code id="server"></code> <button id="copy" type="button">Copy</button>
+        <span class="hint">A DJV built for the studio has it already; set it if not.</span></li>
+      <li>Sign in with the user name and password the administrator gave you. DJV then maps the media share by itself.</li>
+    </ol>
+  </section>
+
+  <section id="all" hidden>
+    <h2>All files</h2>
+    <div class="table-wrap"><table><tbody id="files"></tbody></table></div>
+  </section>
+</main>
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+const KINDS = { installer: 'installer', zip: 'zip, runs without installing', 'disk image': 'disk image', archive: 'archive' };
+const SYSTEMS = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+
+function size(bytes) {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+function date(iso) {
+  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function describe(file) {
+  return [SYSTEMS[file.system] ?? file.system, file.arch, KINDS[file.kind] ?? file.kind].filter(Boolean).join(', ');
+}
+
+function link(file) {
+  const a = document.createElement('a');
+  a.href = file.url;
+  a.textContent = file.file;
+  return a;
+}
+
+async function load() {
+  $('server').textContent = location.origin;
+  let json;
+  try {
+    const res = await fetch('/api/downloads', { cache: 'no-store' });
+    json = await res.json();
+    if (!res.ok) {
+      throw new Error(json.error ?? res.statusText);
+    }
+  } catch (error) {
+    $('none').hidden = false;
+    $('none-text').textContent = `The list of downloads cannot be read: ${error.message}`;
+    $('none-text').className = 'bad';
+    return;
+  }
+  const { latest, files } = json;
+  if (!latest) {
+    $('none').hidden = false;
+    return;
+  }
+  $('latest').hidden = false;
+  $('latest-version').textContent = latest.version ? `DJV ${latest.version}` : 'DJV';
+  $('latest-meta').textContent = `${describe(latest)} · ${size(latest.size)} · ${date(latest.modified)}`;
+  $('latest-link').href = latest.url;
+  $('latest-link').textContent = latest.kind === 'installer' ? 'Download the installer' : 'Download';
+
+  // The other packages of the same version, such as the zip beside the
+  // installer, under the button; every file in the table below.
+  const others = files.filter((file) => file.version === latest.version && file.file !== latest.file);
+  const other = $('latest-other');
+  for (const file of others) {
+    if (other.childNodes.length > 0) {
+      other.append(' · ');
+    }
+    other.append('Also: ', link(file), ` (${describe(file)}, ${size(file.size)})`);
+  }
+
+  if (files.length > 1) {
+    $('all').hidden = false;
+    for (const file of files) {
+      const row = $('files').insertRow();
+      row.insertCell().append(link(file));
+      row.insertCell().textContent = describe(file);
+      const cell = row.insertCell();
+      cell.className = 'num';
+      cell.textContent = `${size(file.size)}, ${date(file.modified)}`;
+    }
+  }
+}
+
+$('copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(location.origin);
+    $('copy').textContent = 'Copied';
+  } catch {
+    // An address that is not localhost is not a secure origin, where the
+    // clipboard cannot be written: select the address for Ctrl+C instead.
+    getSelection().selectAllChildren($('server'));
+  }
+});
+
+load();
+</script>
+</body>
+</html>

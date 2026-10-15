@@ -8,8 +8,8 @@ Starts the DJV sync server in Docker, from this folder.
 .DESCRIPTION
 Makes .env from .env.example the first time, and gets the server's image:
 from the registry when DJV_SYNC_IMAGE in .env names one, or else from the
-package's .tar when Docker does not have it yet. Then starts the container,
-and waits until the server answers.
+package's .tar. Then starts the container, and waits until the server
+answers.
 
 The container restarts with Docker, so this is needed once, and again after
 an update or stop.ps1.
@@ -101,8 +101,16 @@ if ($repository -ne 'djv-sync-server') {
 # Without a registry, the image comes with the package, so that the server
 # needs no internet. The package's image is named djv-sync-server; it is
 # given the registry's name too when that is the one the compose file runs.
+#
+# It is loaded at every start, even when Docker has an image of that
+# version: a package built again with a new DJV for /app keeps the server's
+# version, and would otherwise never replace the image Docker has. Loading
+# an image Docker already has changes nothing.
+$tar = Get-ChildItem -Filter 'djv-sync-server-*.tar' | Sort-Object Name | Select-Object -Last 1
+if ($repository -eq 'djv-sync-server' -and $tar) {
+    $haveImage = $false
+}
 if (-not $haveImage) {
-    $tar = Get-ChildItem -Filter 'djv-sync-server-*.tar' | Sort-Object Name | Select-Object -Last 1
     if (-not $tar) {
         throw "Docker has no image $image, and there is no djv-sync-server-*.tar here to load it from."
     }
@@ -134,7 +142,7 @@ Write-Host "Waiting for $url ..."
 for ($i = 0; $i -lt 30; ++$i) {
     try {
         Invoke-RestMethod "$url/api/health" -TimeoutSec 2 | Out-Null
-        Write-Host "The DJV sync server is running. Portal: $url/   Admin page: $url/admin (user $admin, password in secrets\admin_password.txt)"
+        Write-Host "The DJV sync server is running. Portal: $url/   DJV download: $url/app   Admin page: $url/admin (user $admin, password in secrets\admin_password.txt)"
         return
     } catch {
         Start-Sleep -Seconds 1

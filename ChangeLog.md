@@ -31,6 +31,9 @@ Changes:
 * The sync server a new DJV starts with is set when DJV is built, by
   DJV_SYNC_SERVER in a .env file (see .env.example), and the sync server's
   administrator is named by ADMIN_USER.
+* The sync server offers DJV itself for download at /app, with no sign-in.
+  Its Docker image carries the DJV installer, so updating the server brings
+  the studio the new DJV.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 * Export now has options for specifying the width or a custom size.

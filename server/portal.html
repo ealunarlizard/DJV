@@ -95,7 +95,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: v
   <h1 id="title">DJV review portal</h1>
   <span class="meta" id="meta"></span>
   <span id="message"></span>
-  <span class="right"><span class="meta" id="who"></span><a class="button" id="admin-link" href="/admin" hidden>Admin</a><button id="sign-out" hidden>Sign out</button></span>
+  <span class="right"><span class="meta" id="who"></span><a class="button" href="/app">Download DJV</a><a class="button" id="admin-link" href="/admin" hidden>Admin</a><button id="sign-out" hidden>Sign out</button></span>
 </header>
 <nav id="tabs" hidden>
   <button data-tab="sessions" class="current">Sessions</button>
@@ -105,7 +105,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: v
 <main>
   <section id="login" hidden>
     <h2>Sign in</h2>
-    <p class="hint">With the user name and password you use in DJV.</p>
+    <p class="hint">With the user name and password you use in DJV. No DJV on this PC yet? <a href="/app">Download it</a>.</p>
     <form id="login-form" class="form">
       <label for="username">User</label><input type="text" id="username" autocomplete="username">
       <label for="password">Password</label><input type="password" id="password" autocomplete="current-password">

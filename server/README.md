@@ -20,8 +20,11 @@ same people sign in to upload videos to the media share, make review
 sessions of one or two of them for the people they choose, and open a
 session in DJV with its *review* link. Its guide is `docs/lan/portal.md`.
 
+`/app` is where the studio downloads DJV itself (`app.html`; see
+*Downloads*).
+
 The server is a few files: `server.js`, `config.js`, `users.js`, `media.js`,
-`portal.html` and `admin.html`. It needs nothing beyond Node.js 22.13 or
+`portal.html`, `admin.html` and `app.html`. It needs nothing beyond Node.js 22.13 or
 newer, which has SQLite built in. For the studio it runs in Docker. The
 deployment is in [`deploy/`](deploy/) and its guide is in
 `docs/lan/docker-deploy.md`.
@@ -68,6 +71,7 @@ SQLite module is still experimental.
 | `SHARE_PASSWORD` | (none) | The same password, given directly, when there is no file. |
 | `DB_EXCLUSIVE` | off | `1` to lock the database exclusively. Needed when `DATA_DIR` is a Windows folder mounted into a container (see *Storage*). |
 | `MEDIA_DIR` | (none) | The folder the media share shares. The portal lists the videos in it and uploads to it. Without it, the portal has no videos. The image sets `/media`. |
+| `DOWNLOADS_DIR` | `server/downloads` | The DJV packages `/app` offers. The image sets `/downloads`, which holds the packages it was built with. |
 
 At every start, the server makes sure the administrator exists and has the
 root password. A server with no administrator and no root password does not
@@ -128,6 +132,29 @@ Open `http://<server>:8877/admin` and sign in as `admin`. The page lets you:
 - download a backup of the database.
 
 The page keeps its session token for the browser tab only.
+
+## Downloads
+
+`http://<server>:8877/app` offers DJV to anyone who can reach the server,
+with no sign-in, since a PC new to the studio has nothing to sign in with
+yet. It shows the newest version's Windows installer, the other packages of
+that version, and how to set DJV to this server. `/app/latest` redirects to
+that installer, for a link that stays good across updates.
+
+The packages are the files in `DOWNLOADS_DIR`, named as CPack names them,
+`djv-<version>-<system>-<arch>.<ext>`. The image carries them in
+`/downloads`: `build-package.ps1` puts in the Windows installer and zip of
+the DJV version in `lib/djv/Models/Version.h`, from `DJV_BUILD_DIR` or else
+`build-Release` beside the repository, or the files given with `-Djv`. It
+stops when there are none; `-NoDjv` builds an image without DJV. Updating
+the server is then what brings the studio a new DJV:
+
+```powershell
+# From the folder above the checkout: the DJV installer and zip, in build-Release.
+<src>\package-win.bat <src> Release
+server\build-package.ps1 -Push ghcr.io/<organization>/djv-sync-server
+# then .\start.ps1 on the server
+```
 
 DJV and the admin page connect over plain HTTP. The passwords cross the
 network at sign-in, and a random token is sent after that. Across an
@@ -201,7 +228,8 @@ request after that sends `Authorization: Bearer <token>`.
 - After 10 failures from one address in 5 minutes, sign-ins from it get 429
   for the rest of that 5-minute window.
 
-`health`, `login` and `hello` need no token.
+`health`, `login`, `hello` and `downloads` need no token, and nor do the
+downloads at `/app/<file>`.
 
 ### Who sees a session
 
@@ -227,6 +255,7 @@ X-DJV-Version: 3.7.5
 | Request | Body | Answer |
 |---|---|---|
 | `GET /health` | | `{ "ok": true }` |
+| `GET /downloads` | | `{ "latest", "files": [{ "file", "url", "version", "system", "arch", "kind", "size", "modified" }] }`, the newest version first; `latest` is the one `/app/latest` redirects to, or null. Outside `/api`, `GET`/`HEAD /app/<file>` downloads a file of the list. |
 | `POST /login` | `{ "username", "password" }` | see above |
 | `POST /logout` | | `{ "ok": true }` |
 | `GET /hello` | | `{ "name", "serverId", "serverVersion", "djvVersion", "authRequired": true, "signedIn" }`, plus, once signed in, `"user": {...}` and `"storage": { "unc", "user", "password" }`. `serverId` is made once and kept in the database: DJV compares it to follow a review link given with another address of the same server. |

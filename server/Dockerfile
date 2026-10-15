@@ -11,6 +11,15 @@
 # /media is the host's folder of review media, the one the host shares to the
 # studio as the media share: the portal lists the videos in it and uploads
 # new ones to it.
+#
+# /downloads holds the DJV packages that /app offers the studio. They are in
+# the image, so that updating the server is what brings the studio a new
+# DJV, with nothing to upload by hand. build-package.ps1 passes them in as
+# the "downloads" build context (docker build --build-context
+# downloads=<folder>), which takes the place of the empty stage below; a
+# plain "docker build" makes an image with none.
+
+FROM scratch AS downloads
 
 FROM node:24-alpine
 
@@ -22,12 +31,15 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8877 \
     DATA_DIR=/data \
-    CONFIG_FILE=/data/config.json     MEDIA_DIR=/media \
+    CONFIG_FILE=/data/config.json \
+    MEDIA_DIR=/media \
+    DOWNLOADS_DIR=/downloads \
     ROOT_PASSWORD_FILE=/run/secrets/admin_password \
     SHARE_PASSWORD_FILE=/run/secrets/share_password
 
 WORKDIR /app
-COPY package.json server.js config.js users.js media.js admin.html portal.html ./
+COPY package.json server.js config.js users.js media.js admin.html portal.html app.html ./
+COPY --from=downloads / /downloads/
 
 # The server runs as Node's own unprivileged user, which owns the data and
 # media folders when they are not mounted from the host.

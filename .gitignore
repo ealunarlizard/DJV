@@ -24,6 +24,8 @@ dist/
 server/data/
 server/config.json
 server/node_modules/
+# The DJV packages "npm start" offers at /app, for trying the page out.
+server/downloads/
 # A deployment's secrets, data and backups. The passwords must never be
 # committed. The packages built for one go in dist/, ignored above.
 server/deploy/secrets/

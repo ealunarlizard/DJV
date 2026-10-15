@@ -56,3 +56,12 @@ loading the `.tar`:
 3. Run `.\start.ps1`. It pulls `DJV_SYNC_IMAGE:DJV_SYNC_VERSION`.
 
 An update is then only a new `DJV_SYNC_VERSION` and `.\start.ps1`.
+
+## DJV for the studio
+
+The image carries DJV, and the server offers it at
+`http://<server>:8877/app`, with no sign-in. `/app/latest` links the
+installer. A new DJV comes with an update of the server: the package (or
+the image pushed to the registry) is built again with it, and
+`.\start.ps1` brings it in, even under the same server version. Then set
+**Expected DJV version** on the admin page.
