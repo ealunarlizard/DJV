@@ -8,8 +8,8 @@ change within a moment.
 A session also remembers the media file its markers are about. Someone who
 joins with nothing open gets that file loaded. Drawings are not shared.
 
-People sign in with a user name and a password, which the administrator,
-**lldjv**, gives them on the admin page the server serves at `/admin`. Once a
+People sign in with a user name and a password, which the administrator
+(`ADMIN_USER`, **admin** unless set) gives them on the admin page the server serves at `/admin`. Once a
 DJV has signed in, the server tells it where the media share is and which
 Windows account to map it with, and DJV maps it to a drive. The *Studio
 network* page of the DJV documentation (`docs/lan-setup.html`) explains how to
@@ -61,15 +61,18 @@ SQLite module is still experimental.
 | `DATA_DIR` | `server/data` | Where the database is kept, unless `DB_FILE` says otherwise. |
 | `DB_FILE` | `DATA_DIR/djv-sync.db` | The SQLite database that holds every session and sign-in. |
 | `CONFIG_FILE` | `server/config.json` | The configuration: the server name, the media share and its account, the expected DJV version, and the users. |
-| `ROOT_PASSWORD_FILE` | (none) | A file holding the password of `lldjv`, the administrator. |
+| `ADMIN_USER` | `admin` | The administrator's user name. `npm start` reads it from the `.env` at the top of the source tree, and a Docker deployment from its own `.env`. |
+| `ROOT_PASSWORD_FILE` | (none) | A file holding the administrator's password. |
 | `ROOT_PASSWORD` | (none) | The same password, given directly, when there is no file. |
 | `SHARE_PASSWORD_FILE` | (none) | A file holding the password of the media share's account. |
 | `SHARE_PASSWORD` | (none) | The same password, given directly, when there is no file. |
 | `DB_EXCLUSIVE` | off | `1` to lock the database exclusively. Needed when `DATA_DIR` is a Windows folder mounted into a container (see *Storage*). |
 | `MEDIA_DIR` | (none) | The folder the media share shares. The portal lists the videos in it and uploads to it. Without it, the portal has no videos. The image sets `/media`. |
 
-At every start, the server makes sure `lldjv` exists and has the root
-password. A server with no `lldjv` and no root password does not start. A file
+At every start, the server makes sure the administrator exists and has the
+root password. A server with no administrator and no root password does not
+start. Set `ADMIN_USER` before the first start: a server whose
+administrator is renamed later keeps the old one as an ordinary user. A file
 read for a password may end with a line break or start with a byte order mark;
 neither is taken as part of the password.
 
@@ -81,7 +84,7 @@ tells DJV and who may sign in:
 ```json
 {
   "name": "Dev review server",
-  "storage": { "unc": "\\\\192.168.1.40\\media", "user": "djv" },
+  "storage": { "unc": "\\\\192.168.0.100\\media", "user": "djv" },
   "djvVersion": "3.7.5",
   "users": [
     { "username": "anna", "name": "Anna", "passwordHash": "scrypt$16384$8$1$…", "created": "…", "updated": "…" }
@@ -97,7 +100,7 @@ tells DJV and who may sign in:
 - `djvVersion` is the DJV version every PC should run. A PC running another
   is warned, and flagged on the admin page. Leave it empty to not check.
 - `users` lists the people who may sign in. The admin page adds them, and
-  their passwords are kept hashed with scrypt. `lldjv` is the only
+  their passwords are kept hashed with scrypt. `admin` is the only
   administrator.
 
 The server reads the file when it starts, and the admin page writes it. A
@@ -114,7 +117,7 @@ only.
 
 ## Admin page
 
-Open `http://<server>:8877/admin` and sign in as `lldjv`. The page lets you:
+Open `http://<server>:8877/admin` and sign in as `admin`. The page lets you:
 
 - add users, rename them, give them a new password, or remove them;
 - see when each user last signed in, from which PC, and with which DJV
@@ -203,7 +206,7 @@ request after that sends `Authorization: Bearer <token>`.
 ### Who sees a session
 
 A session is for the people it was made for (`members`), whoever made it
-(`createdBy`), and `lldjv`. For anyone else, every request about it gets 403
+(`createdBy`), and `admin`. For anyone else, every request about it gets 403
 with `"code": "not-member"`, and `GET /sessions` leaves it out.
 
 - A name that nobody has used yet becomes a session the first time someone
@@ -211,7 +214,7 @@ with `"code": "not-member"`, and `GET /sessions` leaves it out.
   creator and only member.
 - A session made before server 2.1 has no members (`members: null`), and is
   open to every user.
-- Only the creator and `lldjv` change or delete a session (403
+- Only the creator and `admin` change or delete a session (403
   `not-owner`).
 
 Every request also says which DJV it comes from, for the admin page:
@@ -239,7 +242,7 @@ X-DJV-Version: 3.7.5
 | `GET /sessions/<session>/events?since=<rev>` | | Server-sent events |
 | `GET /people` | | `{ "people": [{ "username", "name" }] }`, to invite |
 | `GET /videos` | | `{ "enabled", "videos": [{ "path", "name", "folder", "size", "modified" }], "folders", "free", "uploading" }` |
-| `DELETE /videos?path=<path>[&force=1]` | | `{ "ok": true }`. Only `lldjv`. 409 with `"sessions"` while sessions use the file, unless `force=1`. |
+| `DELETE /videos?path=<path>[&force=1]` | | `{ "ok": true }`. Only `admin`. 409 with `"sessions"` while sessions use the file, unless `force=1`. |
 | `POST /uploads` | `{ "path", "size" }` | `{ "id", "path", "size", "received", "chunkSize" }`. The same user starting the same file again gets the unfinished upload back. 409 for a name that is taken, 507 for too little space. |
 | `PUT /uploads/<id>?offset=<received>` | the next piece, as raw bytes, at most `chunkSize` | `{ "received", "done" }`, and `"video"` when it is whole. 409 with `"received"` for a piece out of order. |
 | `GET /uploads` | | `{ "uploads": [...] }`, the user's unfinished ones |
@@ -307,15 +310,15 @@ A comment is written every 15 seconds to keep the stream open.
 
 These requests live under `/api/admin`, for the admin page. They need the
 token of an administrator: without a token they get 401, and with a user who
-is not `lldjv` they get 403 with `"code": "not-admin"`.
+is not `admin` they get 403 with `"code": "not-admin"`.
 
 | Request | Body | Answer |
 |---|---|---|
 | `GET /config` | | `{ "name", "storage": { "unc", "user" }, "djvVersion", "serverVersion", "sharePasswordSet", "file" }` |
 | `PUT /config` | any of `name`, `storage`, `djvVersion` | as `GET`, or 400 for a value that cannot be used |
 | `GET /users` | | `{ "users": [{ "username", "name", "admin", "created", "updated", "lastSignIn", "lastSeen", "pc", "ip", "version", "connected" }] }` |
-| `PUT /users/<name>` | `{ "name"?, "password"? }` | the user, added or changed. A new user needs a password of at least 8 characters, and `lldjv`'s password is only set from its file. |
-| `DELETE /users/<name>` | | `{ "ok": true }`, 404 for no such user, 400 for `lldjv` |
+| `PUT /users/<name>` | `{ "name"?, "password"? }` | the user, added or changed. A new user needs a password of at least 8 characters, and `admin`'s password is only set from its file. |
+| `DELETE /users/<name>` | | `{ "ok": true }`, 404 for no such user, 400 for `admin` |
 | `GET /connected` | | `{ "connected": [{ "user", "pc", "session", "ip", "version", "since" }] }` |
 | `GET /sessions` | | as `GET /api/sessions` |
 | `GET /backup` | | a copy of the database, `djv-sync-<date>.db` |

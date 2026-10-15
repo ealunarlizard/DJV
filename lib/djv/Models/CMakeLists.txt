@@ -84,6 +84,23 @@ else()
 endif()
 add_dependencies(djvModels djvBuildInfo)
 
+# The sync server a new PC starts with (models::defaultSyncServer()):
+# DJV_SYNC_SERVER in the .env at the top of the source tree, which a studio
+# keeps for itself, or else the example in .env.example. A DJV_SYNC_SERVER
+# given to CMake (-D, or etc/Config/local.cmake) wins over both.
+include(DotEnv)
+if(NOT DEFINED DJV_SYNC_SERVER)
+    djv_read_dotenv(DJV_SYNC_SERVER DJV_SYNC_SERVER)
+else()
+    set(DJV_SYNC_SERVER_FROM "the CMake variable")
+endif()
+# It goes into a string literal, so it is held to what an address has.
+if(NOT DJV_SYNC_SERVER MATCHES "^(https?://[A-Za-z0-9.:@%_~/-]+)?$")
+    message(FATAL_ERROR "DJV_SYNC_SERVER \"${DJV_SYNC_SERVER}\" is not a server address, e.g. http://192.168.0.100:8877.")
+endif()
+message(STATUS "DJV_SYNC_SERVER: ${DJV_SYNC_SERVER} (from ${DJV_SYNC_SERVER_FROM})")
+target_compile_definitions(djvModels PRIVATE "DJV_SYNC_DEFAULT_SERVER=\"${DJV_SYNC_SERVER}\"")
+
 target_include_directories(djvModels
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib>

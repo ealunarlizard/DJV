@@ -4,6 +4,8 @@
 // The studio network: who may sign in, what a signed-in DJV is told about
 // the media share, and the admin requests that manage both.
 
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -13,11 +15,11 @@ import path from 'node:path';
 
 import { createSyncServer } from '../server.js';
 import { ROOT_PASSWORD, login, start } from './helpers.js';
-import { hashPasswordSync, verifyPasswordSync } from '../users.js';
+import { ROOT_USER, hashPasswordSync, verifyPasswordSync } from '../users.js';
 
 const studio = {
   name: 'Dev review server',
-  storage: { unc: '\\\\192.168.1.40\\media', user: 'djv' },
+  storage: { unc: '\\\\192.168.0.100\\media', user: 'djv' },
   djvVersion: '3.7.5',
 };
 
@@ -67,7 +69,7 @@ test('the administrator is made from the password file, and kept hashed', async 
   let s = await start({ dataDir, configFile });
   await s.stop({ keepData: true });
   const saved = JSON.parse(await readFile(configFile, 'utf8'));
-  assert.deepEqual(saved.users.map((u) => u.username), ['lldjv']);
+  assert.deepEqual(saved.users.map((u) => u.username), [ROOT_USER]);
   assert.ok(saved.users[0].passwordHash.startsWith('scrypt$'));
   assert.ok(!JSON.stringify(saved).includes(ROOT_PASSWORD));
 
@@ -77,7 +79,7 @@ test('the administrator is made from the password file, and kept hashed', async 
   s = await start({ dataDir, configFile, rootPassword: 'a-new-root-password' });
   try {
     assert.equal((await fetch(`${s.base}/api/sessions`, { headers: bearer(old) })).status, 401);
-    assert.equal((await login(s.base, 'lldjv', ROOT_PASSWORD)).status, 401);
+    assert.equal((await login(s.base, ROOT_USER, ROOT_PASSWORD)).status, 401);
   } finally {
     await s.stop({ keepData: true });
   }
@@ -199,8 +201,8 @@ test('only the administrator uses the admin requests', async () => {
 
     // The administrator cannot be removed, nor given a password other than
     // the file's.
-    assert.equal((await admin(s.base, s.token, 'DELETE', 'users/lldjv')).status, 400);
-    res = await admin(s.base, s.token, 'PUT', 'users/lldjv', { password: 'something-else' });
+    assert.equal((await admin(s.base, s.token, 'DELETE', `users/${ROOT_USER}`)).status, 400);
+    res = await admin(s.base, s.token, 'PUT', `users/${ROOT_USER}`, { password: 'something-else' });
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /ROOT_PASSWORD_FILE/);
     // A new user needs a password, of a decent length, and a safe name.
@@ -220,14 +222,14 @@ test('users and settings set on the admin page are kept in the configuration fil
   try {
     await addUser(s, 'anna', 'anna-password', 'Anna');
     const { users } = await (await admin(s.base, s.token, 'GET', 'users')).json();
-    assert.deepEqual(users.map((u) => [u.username, u.name, u.admin]), [['lldjv', 'Administrator', true], ['anna', 'Anna', false]]);
+    assert.deepEqual(users.map((u) => [u.username, u.name, u.admin]), [[ROOT_USER, 'Administrator', true], ['anna', 'Anna', false]]);
     assert.ok(users.every((u) => u.passwordHash === undefined));
 
-    let res = await admin(s.base, s.token, 'PUT', 'config', { storage: { unc: '//192.168.1.40/video/', user: '192.168.1.40\\djv' }, djvVersion: '3.7.6' });
+    let res = await admin(s.base, s.token, 'PUT', 'config', { storage: { unc: '//192.168.0.100/video/', user: '192.168.0.100\\djv' }, djvVersion: '3.7.6' });
     assert.equal(res.status, 200);
     const view = await res.json();
-    assert.equal(view.storage.unc, '\\\\192.168.1.40\\video');
-    assert.equal(view.storage.user, '192.168.1.40\\djv');
+    assert.equal(view.storage.unc, '\\\\192.168.0.100\\video');
+    assert.equal(view.storage.user, '192.168.0.100\\djv');
     assert.equal(view.sharePasswordSet, false);
     // What is not a share is refused, and nothing changes.
     assert.equal((await admin(s.base, s.token, 'PUT', 'config', { storage: { unc: 'C:\\media' } })).status, 400);
@@ -237,9 +239,9 @@ test('users and settings set on the admin page are kept in the configuration fil
   }
 
   const saved = JSON.parse(await readFile(configFile, 'utf8'));
-  assert.equal(saved.storage.unc, '\\\\192.168.1.40\\video');
+  assert.equal(saved.storage.unc, '\\\\192.168.0.100\\video');
   assert.equal(saved.djvVersion, '3.7.6');
-  assert.deepEqual(saved.users.map((u) => u.username), ['lldjv', 'anna']);
+  assert.deepEqual(saved.users.map((u) => u.username), [ROOT_USER, 'anna']);
   assert.ok(verifyPasswordSync('anna-password', saved.users[1].passwordHash));
 
   s = await start({ dataDir, configFile });
@@ -267,7 +269,7 @@ test('hello tells a signed-in DJV where the media is, and how to sign in to it',
     hello = await (await fetch(`${s.base}/api/hello`, { headers: bearer(token, pc('edit-bay-1')) })).json();
     assert.equal(hello.signedIn, true);
     assert.deepEqual(hello.user, { username: 'anna', name: 'Anna', admin: false });
-    assert.deepEqual(hello.storage, { unc: '\\\\192.168.1.40\\media', user: 'djv', password: 'share-password' });
+    assert.deepEqual(hello.storage, { unc: '\\\\192.168.0.100\\media', user: 'djv', password: 'share-password' });
 
     const config = await (await admin(s.base, s.token, 'GET', 'config')).json();
     assert.equal(config.sharePasswordSet, true);
@@ -440,4 +442,22 @@ test('a configuration that cannot be read stops the server from starting', async
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+// The administrator's name is read from ADMIN_USER when the server starts,
+// so it is tried in a Node of its own.
+test('the administrator is named by ADMIN_USER, "admin" when it is not set', () => {
+  const users = pathToFileURL(path.join(import.meta.dirname, '..', 'users.js')).href;
+  const rootUser = (value) => {
+    const env = { ...process.env };
+    delete env.ADMIN_USER;
+    if (value !== undefined) env.ADMIN_USER = value;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', `console.log((await import(${JSON.stringify(users)})).ROOT_USER)`], { env, encoding: 'utf8' });
+  };
+  assert.equal(rootUser(undefined).stdout.trim(), 'admin');
+  assert.equal(rootUser('').stdout.trim(), 'admin');
+  assert.equal(rootUser(' studio-admin ').stdout.trim(), 'studio-admin');
+  const bad = rootUser('bad name');
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /ADMIN_USER "bad name" is not a user name/);
 });

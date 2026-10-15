@@ -1,7 +1,7 @@
 # Sharing the media folder for DJV
 
-The review media lives in a folder on the dev server (192.168.1.40). DJV
-reads it over the network as a read-only share, `\\192.168.1.40\media`,
+The review media lives in a folder on the dev server (192.168.0.100). DJV
+reads it over the network as a read-only share, `\\192.168.0.100\media`,
 signing in to it as a Windows account called **djv** that has a standard
 password. This guide sets that up.
 
@@ -16,7 +16,7 @@ password. This guide sets that up.
   address, account and password to a DJV only after its user has signed in
   with their own user name and password.
 - DJV maps the share to the drive letter chosen on that PC, signing in to it
-  as `192.168.1.40\djv`. Windows then keeps the account for the server in the
+  as `192.168.0.100\djv`. Windows then keeps the account for the server in the
   Credential Manager, so the drive can be mapped again even while the sync
   server is down.
 
@@ -115,9 +115,9 @@ The same steps without the script, on the dev server:
 
 ## 3. Tell the sync server
 
-1. Sign in to `http://192.168.1.40:8877/admin` as `lldjv`.
+1. Sign in to `http://192.168.0.100:8877/admin` as `admin`.
 2. Under **Server settings**, set:
-   - **Media share**: `\\192.168.1.40\media`;
+   - **Media share**: `\\192.168.0.100\media`;
    - **Share user**: `djv`.
 3. Click **Save settings**.
 
@@ -126,7 +126,7 @@ server was started without `secrets\share_password.txt`: create the file and
 restart the server with `.\stop.ps1`, then `.\start.ps1`.
 
 If the share user has no domain, DJV signs in as `<server>\<user>`, for
-example `192.168.1.40\djv`. That is the dev server's own local account, even
+example `192.168.0.100\djv`. That is the dev server's own local account, even
 on a PC that belongs to a domain. To use a domain account, give it as
 `DOMAIN\user`.
 
@@ -135,9 +135,9 @@ on a PC that belongs to a domain. To use a domain account, give it as
 From any PC on the LAN, without DJV:
 
 ```
-net use \\192.168.1.40\media /user:192.168.1.40\djv
-dir \\192.168.1.40\media
-net use \\192.168.1.40\media /delete
+net use \\192.168.0.100\media /user:192.168.0.100\djv
+dir \\192.168.0.100\media
+net use \\192.168.0.100\media /delete
 ```
 
 `net use` asks for the password. If `dir` lists the media, the share works.
@@ -146,12 +146,12 @@ Then in DJV:
 
 1. Choose a **Media drive** in the **Sync Server** settings.
 2. Sign in.
-3. The **Drive** line should say `S: is \\192.168.1.40\media`.
+3. The **Drive** line should say `S: is \\192.168.0.100\media`.
 
 ## Changing the standard password
 
 1. Put the new password in `secrets\share_password.txt`. To make a random
-   one, run `.\new-secrets.ps1 -Force`, which also replaces the lldjv
+   one, run `.\new-secrets.ps1 -Force`, which also replaces the admin
    password.
 2. Run `.\share-setup.ps1 -Path D:\Media` again as an administrator. It gives
    the account the new password.
@@ -165,7 +165,7 @@ maps the drive with it, and stores it in place of the old one.
 
 | DJV says | Cause, and what to do |
 | --- | --- |
-| *Windows was not let in to \\\\192.168.1.40\\media as 192.168.1.40\\djv* | The account or its password does not match the file. Run `share-setup.ps1` again, then restart the server. |
-| *…already connected to the server … under another user name* | The PC already has a connection to 192.168.1.40 with another account, for example a drive mapped by hand. Windows allows one account per server: run `net use`, delete the other connections to 192.168.1.40, then **Check** in DJV. |
-| *Cannot reach \\\\192.168.1.40\\media* | The dev server is off, the share does not exist, or the firewall blocks SMB (TCP 445). Check *File and Printer Sharing* and the network profile. |
+| *Windows was not let in to \\\\192.168.0.100\\media as 192.168.0.100\\djv* | The account or its password does not match the file. Run `share-setup.ps1` again, then restart the server. |
+| *…already connected to the server … under another user name* | The PC already has a connection to 192.168.0.100 with another account, for example a drive mapped by hand. Windows allows one account per server: run `net use`, delete the other connections to 192.168.0.100, then **Check** in DJV. |
+| *Cannot reach \\\\192.168.0.100\\media* | The dev server is off, the share does not exist, or the firewall blocks SMB (TCP 445). Check *File and Printer Sharing* and the network profile. |
 | The drive maps but is empty | `djv` can open the share but not read the folder. Check the NTFS permissions (step 2). |

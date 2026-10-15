@@ -11,23 +11,34 @@ root `ChangeLog.md`, under the DJV version.
 
 ## [lan-0.3.0] - Unreleased
 
-Built on DJV 3.7.5-dev, with sync server 2.1.1 (`server/package.json`).
+Built on DJV 3.7.5-dev, with sync server 2.2.0 (`server/package.json`).
 Branch `feature/lan-server`. A DJV of lan-0.2.0 still syncs notes with this
 server; the review links and two-video sessions need this DJV.
 
 ### Added
 
+- `.env` and `.env.example`: a studio's own values are kept out of the
+  code. `DJV_SYNC_SERVER` is DJV's default sync server, read by CMake; the
+  example is `http://192.168.0.100:8877`. (CR-024)
+- `ADMIN_USER`, the server administrator's name, `admin` unless set; the
+  administrator's password file is `secrets\admin_password.txt`, and
+  `start.ps1` moves an older deployment over. (CR-024)
+- `DJV_SYNC_IMAGE` in the deployment's `.env`: the server's image in a
+  private registry, such as GitHub's, which `start.ps1` pulls; and
+  `build-package.ps1 -Push <repository>`, which pushes it. Without it, the
+  package's `.tar` is loaded as before. (CR-025)
+
 - The review portal, at the server's address, used with the same accounts
   as DJV (`server/portal.html`, `docs/lan/portal.md`). (CR-020)
 - Uploading videos to the media share from the portal, in resumable 32 MB
-  pieces; the list of videos is the shared folder's. Only lldjv deletes
+  pieces; the list of videos is the shared folder's. Only admin deletes
   videos. (CR-018)
 - `MEDIA_DIR`, the shared folder mounted read-write into the container as
   `/media` from `DJV_MEDIA_DIR` in `.env`, which `share-setup.ps1` sets.
   (CR-018)
 - Sessions with a date, a description, a creator and the people they are
   for; made on the portal with a name the server chooses, edited or deleted
-  by the creator and lldjv. (CR-019)
+  by the creator and admin. (CR-019)
 - Sessions of two videos: the media's `compare` file, opened in DJV as B,
   side by side. (CR-021)
 - Review links, `djv://session/<session>?server=<server>`: DJV registers
@@ -55,7 +66,7 @@ server; the review links and two-video sessions need this DJV.
 
 ### Changed
 
-- A session is seen and joined only by its people, its creator and lldjv
+- A session is seen and joined only by its people, its creator and admin
   (403 `not-member`). A name first opened from DJV is that user's session.
   Sessions of server 2.0 stay open to everyone. (CR-019)
 - `GET /api/sessions` lists the user's sessions, newest first, with their
@@ -84,8 +95,8 @@ must both be this version.
 - Users with passwords. People sign in with `POST /api/login` and get a
   session token for every other request. Passwords are hashed with scrypt.
   Failed sign-ins are throttled. (CR-014)
-- The administrator `lldjv`, made from a password file at every start. Only
-  `lldjv` uses the admin page, which now signs in and manages users. (CR-014)
+- The administrator `admin`, made from a password file at every start. Only
+  `admin` uses the admin page, which now signs in and manages users. (CR-014)
 - **User**, **Password**, **Sign in** and **Sign out** in DJV's Sync Server
   settings. The password is kept in the Windows Credential Manager, and DJV
   signs in by itself at start. (CR-014)
@@ -98,7 +109,7 @@ must both be this version.
 
 ### Changed
 
-- DJV's default sync server is `http://192.168.1.40:8877`, and the server's
+- DJV's default sync server is `http://192.168.0.100:8877`, and the server's
   default port is 8877. (CR-013)
 - The client ID is only the PC's name, shown on the admin page; the client
   registry, the waiting list and requireRegistration are gone. (CR-014,

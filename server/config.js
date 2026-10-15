@@ -46,13 +46,13 @@ function checkText(value, what, max) {
 function checkUnc(value) {
   const unc = checkText(value, 'The storage share', MAX_UNC).replaceAll('/', '\\');
   if (unc && !/^\\\\[^\\]+\\[^\\]+/.test(unc)) {
-    throw new ConfigError('The storage share must be a UNC path, e.g. \\\\192.168.1.40\\media.');
+    throw new ConfigError('The storage share must be a UNC path, e.g. \\\\192.168.0.100\\media.');
   }
   return unc.replace(/\\+$/, '');
 }
 
 // A Windows account, alone or with the machine or domain it belongs to:
-// "djv", or "192.168.1.40\djv".
+// "djv", or "192.168.0.100\djv".
 function checkShareUser(value) {
   const user = checkText(value, 'The share user', MAX_SHARE_USER);
   if (/["/[\]:;|=,+*?<>]/.test(user)) {

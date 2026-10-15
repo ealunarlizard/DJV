@@ -388,7 +388,7 @@ namespace djv
                 "Open a review link from the sync server's portal: close the "
                 "review, join the session and open its videos, or with "
                 "autoConnect=false only fill the session in; e.g., "
-                "{ \"url\": \"djv://session/sh010?server=http%3A%2F%2F192.168.1.40%3A8877&autoConnect=true\" }. "
+                "{ \"url\": \"djv://session/sh010?server=http%3A%2F%2F192.168.0.100%3A8877&autoConnect=true\" }. "
                 "Every step is logged as djv::app::ReviewLink.",
                 [appWeak](const nlohmann::json& args)
                 {

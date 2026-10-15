@@ -23,7 +23,7 @@ ENV NODE_ENV=production \
     PORT=8877 \
     DATA_DIR=/data \
     CONFIG_FILE=/data/config.json     MEDIA_DIR=/media \
-    ROOT_PASSWORD_FILE=/run/secrets/lldjv_password \
+    ROOT_PASSWORD_FILE=/run/secrets/admin_password \
     SHARE_PASSWORD_FILE=/run/secrets/share_password
 
 WORKDIR /app

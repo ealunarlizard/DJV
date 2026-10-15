@@ -116,7 +116,7 @@ namespace djv
             std::string username;
             std::string userFullName;
 
-            //! The media share, e.g. "\\192.168.1.40\media", and the
+            //! The media share, e.g. "\\192.168.0.100\media", and the
             //! Windows account it is mapped with, given to signed-in users
             //! only. Empty when none. The password is held in memory only.
             std::string storageUnc;

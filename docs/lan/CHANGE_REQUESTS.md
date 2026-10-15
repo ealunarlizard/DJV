@@ -71,6 +71,8 @@ assets.
 | [CR-021](#cr-021-sessions-of-two-videos-compared) | Sessions of two videos, compared | Implemented | `9dab3ba4a`, `1335c3a2a` |
 | [CR-022](#cr-022-review-links-that-open-djv) | Review links that open DJV | Implemented | `1335c3a2a`, `486f0dd19` |
 | [CR-023](#cr-023-review-links-under-another-address-autoconnect-and-their-log) | Review links under another address, autoConnect, and their log | Implemented | `b46bac5ab`, `486f0dd19` |
+| [CR-024](#cr-024-the-studios-own-values-in-env) | The studio's own values in .env | Implemented | (this branch) |
+| [CR-025](#cr-025-the-server-image-from-a-private-registry) | The server image from a private registry | Implemented (dev server check pending) | (this branch) |
 
 ## CR-001: Live marker sync
 
@@ -219,7 +221,7 @@ DJV keeps its configuration locally, in its settings file.
 | **Requested** | 2026-10-08 |
 | **Implemented** | 2026-10-08, `feature/lan-server`, `b14b81bb4` |
 
-> Since CR-014, the page signs in as `lldjv` instead of asking for an admin
+> Since CR-014, the page signs in as `admin` instead of asking for an admin
 > token, and manages users instead of client IDs. Criterion 2 is replaced by
 > CR-014's criterion 5.
 
@@ -404,7 +406,7 @@ is mapped, so reviewers start where the media is.
 | **Implemented** | 2026-10-09, `feature/lan-server`, `082518945` |
 
 **Description.** The sync server is deployed with Docker on the dev server,
-a Windows machine with Docker Desktop at 192.168.1.40, on port 8877. It comes
+a Windows machine with Docker Desktop at 192.168.0.100, on port 8877. It comes
 as a package that can be tried on a local PC first and then copied to the dev
 server. The SQLite file is kept in a folder of the host, not hidden inside
 the container.
@@ -437,7 +439,7 @@ the container.
 - On this PC (Docker Desktop 29.5), the image was built and run from a
   scratch copy of `deploy/`:
   - The health check reported healthy.
-  - lldjv was made from the secrets file, a user was added, and that user
+  - admin was made from the secrets file, a user was added, and that user
     signed in and wrote a marker.
   - `data/djv-sync.db` and `config.json` appeared on the host.
   - After `stop.ps1` and `start.ps1`, the user, the marker and the session
@@ -446,7 +448,7 @@ the container.
 - With `DB_EXCLUSIVE=0` the bind mount also ran. Exclusive locking stays the
   default, since a `-shm` file on a Windows bind mount is not dependable.
 - `server/test/auth.test.js` checks the backup and the exclusive mode.
-- **Pending:** installing on 192.168.1.40.
+- **Pending:** installing on 192.168.0.100.
 
 ## CR-014: User accounts with passwords
 
@@ -457,7 +459,7 @@ the container.
 | **Implemented** | 2026-10-09, `feature/lan-server`, `082518945`, `5f5a3b75b` |
 
 **Description.** The server authenticates people with a user name and a
-password, not only a client ID. The administrator is the root user `lldjv`,
+password, not only a client ID. The administrator is the root user `admin`,
 with a strong password kept in a local file. The admin registers the users
 from a simple admin page. In DJV, the password is kept in the Windows
 Credential Manager, and DJV signs in by itself.
@@ -471,7 +473,7 @@ Credential Manager, and DJV signs in by itself.
    Repeated failures from one address are slowed down.
 4. Giving a user a new password, or removing them, ends their sign-ins at
    once.
-5. Only `lldjv` uses the admin page and the admin API. Its password is set
+5. Only `admin` uses the admin page and the admin API. Its password is set
    from `ROOT_PASSWORD_FILE` at every start, and cannot be changed or
    removed from the page.
 6. In DJV's **Sync Server** settings, a reviewer types their user and
@@ -496,13 +498,13 @@ Credential Manager, and DJV signs in by itself.
   - `LanModel`: `observeAuth()`, `signIn()`, `signOut()`; `start()` signs in
     with the kept password.
   - `SyncSettings::username`, with the token dropped. The default server is
-    `http://192.168.1.40:8877`.
+    `http://192.168.0.100:8877`.
   - `ui::PasswordEdit`, a masked field with no copy and no undo, and the
     reworked `SyncSettingsWidget`.
   - `App` connects with the token, and connects again on sign-in or when the
     token is refused.
 - Root password: `server/deploy/new-secrets.ps1` writes it into
-  `secrets/lldjv_password.txt`, which is gitignored.
+  `secrets/admin_password.txt`, which is gitignored.
 
 **Verified.**
 - `server/test/auth.test.js` (14 tests) covers criteria 1 to 5, and an old
@@ -628,7 +630,7 @@ configuration has to allow.
 3. A file is listed only when it is whole. It never replaces a file of the
    same name, whatever the case of the letters.
 4. The list of videos is the folder's content, as DJV sees it.
-5. Only lldjv can delete videos, and is warned about sessions that use one.
+5. Only admin can delete videos, and is warned about sessions that use one.
 6. The share itself stays read-only for the account DJV maps it with.
 
 **Implementation.**
@@ -640,7 +642,7 @@ configuration has to allow.
     `MEDIA_DIR/.djv-uploads/<id>.part`;
   - the `uploads` table tracks how much has arrived;
   - the finished file is linked into place.
-- Videos use `GET /api/videos`, plus `DELETE /api/videos?path=` for lldjv.
+- Videos use `GET /api/videos`, plus `DELETE /api/videos?path=` for admin.
 - Docker: `MEDIA_DIR=/media` is bound read-write to `DJV_MEDIA_DIR`.
   `share-setup.ps1` sets that in `.env` to the folder it shares.
 
@@ -663,7 +665,7 @@ configuration has to allow.
 | **Implemented** | 2026-10-12, `feature/lan-server`, `9dab3ba4a`, `1335c3a2a` |
 
 **Description.** A session has a date, a description and the people it is
-for. Only those people, the creator and lldjv can see it. Anyone can make
+for. Only those people, the creator and admin can see it. Anyone can make
 one, and session names never clash.
 
 **Acceptance criteria.**
@@ -673,7 +675,7 @@ one, and session names never clash.
    refused with 403 `not-member`, in the portal and in DJV.
 3. A name typed in DJV that nobody has used yet becomes that user's
    session. Only they can open it until they invite others.
-4. Only the creator and lldjv can change or delete a session. Deleting it
+4. Only the creator and admin can change or delete a session. Deleting it
    tells the DJVs in it, which leave it rather than create it again.
 5. Sessions from a server before 2.1 stay open to everyone.
 
@@ -881,3 +883,87 @@ Also asked for:
   - **`localhost:9999`:** refused, as it cannot be reached.
   - **A session `test` is not one of the people of:** the server's
     `not-member` refusal is logged as an error.
+
+## CR-024: The studio's own values in .env
+
+| | |
+|---|---|
+| **Status** | Implemented |
+| **Requested** | 2026-10-14 |
+| **Implemented** | 2026-10-14, `feature/lan-server` (server 2.2.0) |
+
+**Description.** Before the branch is pushed to a public repository, the
+studio's server address and the administrator's name come out of the code
+and the docs. They go into a `.env` file that git ignores, with a committed
+`.env.example` that holds example values: `192.168.0.100` and `admin`.
+
+**Acceptance criteria.**
+1. No tracked file holds the studio's address or its administrator's name.
+2. DJV's default sync server comes from `DJV_SYNC_SERVER` in `.env`, or
+   from `.env.example` when there is no `.env`.
+3. The server's administrator is `ADMIN_USER`, `admin` when unset. Its
+   password file is named for the role, not the user.
+4. A deployment made before keeps its administrator, its password and its
+   users when it is updated.
+
+**Implementation.**
+- **`.env.example`** at the top of the tree, and `/.env` in `.gitignore`.
+- **`cmake/Modules/DotEnv.cmake`** reads a key from `.env` or
+  `.env.example`. `lib/djv/Models/CMakeLists.txt` passes `DJV_SYNC_SERVER`
+  to `models::defaultSyncServer()`, which `SyncSettings::server` starts
+  with. A `-DDJV_SYNC_SERVER=` wins over both files.
+- **The server** reads `ADMIN_USER` once, at start (`ROOT_USER` in
+  `users.js`), and refuses a name that is not a user name. `npm start`
+  loads the top `.env`. The admin page names no user; it shows whoever
+  signed in.
+- **The deployment:** `ADMIN_USER` in `server/deploy/.env.example` and the
+  compose file, and the secret `admin_password`. `start.ps1` renames an
+  older deployment's password file and sets `ADMIN_USER` to its old name.
+  `backup.ps1` signs in as `ADMIN_USER`.
+- **Docs, comments and tests** use the example values. The server tests
+  name `ROOT_USER`, and pass under any `ADMIN_USER`.
+
+**Verification.** The server tests pass, 41 of 41, both with no
+`ADMIN_USER` and with another name. DJV builds with the address from
+`.env`, and `djv-test` passes.
+
+## CR-025: The server image from a private registry
+
+| | |
+|---|---|
+| **Status** | Implemented (dev server check pending) |
+| **Requested** | 2026-10-14 |
+| **Implemented** | 2026-10-14, `feature/lan-server` (server 2.2.0) |
+
+**Description.** The server's image goes to the studio's private
+registry (GitHub's), and the dev server pulls it from there. An update is
+then a new version in `.env` rather than a new package copied over.
+
+**Acceptance criteria.**
+1. `build-package.ps1 -Push <repository>` pushes `<version>` and `latest`,
+   and the package then pulls from that repository.
+2. With `DJV_SYNC_IMAGE` set in the deployment's `.env`, `start.ps1` pulls
+   `DJV_SYNC_IMAGE:DJV_SYNC_VERSION` and runs it.
+3. Without it, a deployment loads the package's `.tar`, as before.
+4. A server whose registry cannot be reached still starts, from the image
+   Docker has or from the `.tar`.
+5. No registry credentials are in the repository, the package or `.env`.
+
+**Implementation.**
+- **`docker-compose.yml`** runs
+  `${DJV_SYNC_IMAGE:-djv-sync-server}:${DJV_SYNC_VERSION:-latest}`;
+  `DJV_SYNC_IMAGE` is in `server/deploy/.env.example`, empty.
+- **`start.ps1`** pulls when `DJV_SYNC_IMAGE` is set, and on a failure
+  falls back to the local image, or loads the `.tar` and tags it with the
+  registry's name.
+- **`build-package.ps1 -Push`** tags and pushes, and writes the repository
+  into the package's `.env.example`.
+- **The sign-in** is `docker login ghcr.io` on each machine, kept by Docker
+  in the Windows Credential Manager: a classic token with `write:packages`
+  where the image is built, `read:packages` on the dev server.
+- **Docs:** `docs/lan/docker-deploy.md`, `server/deploy/README.md`.
+
+**Verification.** Both scripts parse. `docker compose config` gives the
+registry's image with `DJV_SYNC_IMAGE` set, and the local one without it.
+`ghcr.io/<organization>/djv-sync-server:2.2.0`, pushed by hand, pulls on the
+build machine. Still to check on the dev server: criteria 2 and 4.

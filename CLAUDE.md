@@ -170,10 +170,12 @@ The review markers (`MarkersModel`) can be shared live through
     `health` and `hello`. Passwords are hashed with scrypt
     (`server/users.js`), and only the tokens' SHA-256 is stored, in the
     database's `tokens` table.
-  - `lldjv` is the only admin. Its password comes from
-    `ROOT_PASSWORD_FILE` at every start, and the server refuses to start
-    without one or an existing `lldjv`. Tests use `server/test/helpers.js`,
-    whose `start()` signs in as `lldjv` and whose `fetch` sends the token.
+  - The administrator is the only admin. Its name is `ADMIN_USER`
+    (`admin` unless set; `ROOT_USER` in `server/users.js`), and its
+    password comes from `ROOT_PASSWORD_FILE` at every start. The server
+    refuses to start without one or an existing administrator. Tests use
+    `server/test/helpers.js`, whose `start()` signs in as `ROOT_USER` and
+    whose `fetch` sends the token; tests name `ROOT_USER`, never a name.
   - `server/config.js` handles `config.json`, which the admin page
     (`server/admin.html`, `/api/admin/*`) also writes. It holds the users,
     the media share and its account (`storage.unc`, `storage.user`), and
@@ -189,8 +191,14 @@ The review markers (`MarkersModel`) can be shared live through
     admin page only) and `X-DJV-Version`. The per-connection `clientId` in
     change bodies is separate, and still drives echo detection: two DJVs
     can share a user.
+  - A studio's own values are in the untracked `.env` at the top of the
+    tree; `.env.example` has the keys with example values, and nothing
+    studio-specific belongs in the code or the docs. CMake reads
+    `DJV_SYNC_SERVER` from it (`cmake/Modules/DotEnv.cmake`) into
+    `models::defaultSyncServer()`, and `npm start` reads `ADMIN_USER`. A
+    Docker deployment has its own `server/deploy/.env`.
   - The settings are `SyncSettings` (`/Sync.1`): server (by default
-    `http://192.168.1.40:8877`), user, client ID, drive letter, cached
+    `defaultSyncServer()`), user, client ID, drive letter, cached
     share, media folder. The password is in the Windows Credential Manager
     (`Credentials.cpp`, advapi32), never in the settings.
     `readSyncSettings()` moves the old `SyncServer`/`SyncMediaRoot` keys out
@@ -212,7 +220,7 @@ The review markers (`MarkersModel`) can be shared live through
     paths valid on Windows), and are uploaded in pieces through
     `/api/uploads` (the `uploads` table). Sessions have a `session_info`
     row (schema 3): description, date, creator, members. Only those, and
-    `lldjv`, may see or join one (403 `not-member`); a name with no row is
+    the administrator, may see or join one (403 `not-member`); a name with no row is
     claimed by its first user, and one from before 2.1 is open to all.
     Deleting a session sends `removed` on its streams, and DJV stops.
   - `SyncMedia::compare` is a session's second video, opened as B by

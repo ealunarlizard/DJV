@@ -1205,7 +1205,7 @@ namespace djv
 
             p.serverEdit = ftk::LineEdit::create(context);
             p.serverEdit->setTooltip(
-                "The sync server, e.g. http://192.168.1.40:8877: the address "
+                "The sync server, e.g. http://192.168.0.100:8877: the address "
                 "of the dev server and the port the sync server listens on.");
             ftk::setScreenshotTag(p.serverEdit, "Settings.Sync.Server");
 

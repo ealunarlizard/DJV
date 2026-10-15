@@ -16,6 +16,10 @@ __pycache__/
 build-wheel/
 dist/
 
+# A studio's own settings: its server address, its administrator. The
+# committed .env.example has the same keys with example values.
+/.env
+
 # The sync server's sessions and packages (server/).
 server/data/
 server/config.json

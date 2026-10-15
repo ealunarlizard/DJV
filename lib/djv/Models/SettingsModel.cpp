@@ -22,6 +22,15 @@ namespace djv
     namespace models
     {
 
+        std::string defaultSyncServer()
+        {
+#if defined(DJV_SYNC_DEFAULT_SERVER)
+            return DJV_SYNC_DEFAULT_SERVER;
+#else
+            return std::string();
+#endif // DJV_SYNC_DEFAULT_SERVER
+        }
+
         std::string defaultSyncClientId()
         {
             // COMPUTERNAME on Windows; elsewhere the shell's idea of the host,

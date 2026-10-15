@@ -19,7 +19,10 @@ name: djv-sync
 
 services:
   djv-sync:
-    image: djv-sync-server:${DJV_SYNC_VERSION:-latest}
+    # DJV_SYNC_IMAGE (in .env) names the image in a registry, such as
+    # ghcr.io/<organization>/djv-sync-server, which start.ps1 pulls from.
+    # Unset, it is the image the package carries in its .tar.
+    image: ${DJV_SYNC_IMAGE:-djv-sync-server}:${DJV_SYNC_VERSION:-latest}
     container_name: djv-sync
     restart: unless-stopped
     ports:
@@ -32,6 +35,9 @@ services:
       # index in the server instead. The database cannot then be opened by
       # another program while the server runs: copy it with backup.ps1.
       DB_EXCLUSIVE: ${DB_EXCLUSIVE:-1}
+      # The administrator's user name; its password is the admin_password
+      # secret.
+      ADMIN_USER: ${ADMIN_USER:-admin}
     volumes:
       - ./data:/data
       # The long form, so that a media folder that is not there stops the
@@ -40,7 +46,7 @@ services:
         source: ${DJV_MEDIA_DIR:-./media}
         target: /media
     secrets:
-      - lldjv_password
+      - admin_password
       - share_password
     logging:
       driver: json-file
@@ -49,7 +55,7 @@ services:
         max-file: "3"
 
 secrets:
-  lldjv_password:
-    file: ./secrets/lldjv_password.txt
+  admin_password:
+    file: ./secrets/admin_password.txt
   share_password:
     file: ./secrets/share_password.txt

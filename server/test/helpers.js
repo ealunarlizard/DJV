@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { createSyncServer } from '../server.js';
+import { ROOT_USER } from '../users.js';
 
 export const ROOT_PASSWORD = 'root-password-for-tests';
 
@@ -41,7 +42,7 @@ export async function start(options = {}) {
   const base = `http://127.0.0.1:${server.address().port}`;
   let token = '';
   if (signIn) {
-    const res = await login(base, 'lldjv', rest.rootPassword ?? ROOT_PASSWORD);
+    const res = await login(base, ROOT_USER, rest.rootPassword ?? ROOT_PASSWORD);
     if (res.status !== 200) {
       throw new Error(`Cannot sign in to the test server: ${res.status} ${await res.text()}`);
     }

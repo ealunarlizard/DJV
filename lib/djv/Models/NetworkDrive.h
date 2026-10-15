@@ -27,12 +27,12 @@ namespace djv
         //! "s", "S", "S:" or "S:\". Empty for anything else.
         DJV_MODELS_API std::string normalizeDriveLetter(const std::string&);
 
-        //! The server of a UNC path: "192.168.1.40" for
-        //! "\\192.168.1.40\media". Empty when it is not a UNC path.
+        //! The server of a UNC path: "192.168.0.100" for
+        //! "\\192.168.0.100\media". Empty when it is not a UNC path.
         DJV_MODELS_API std::string getUncHost(const std::string&);
 
         //! A share account as Windows is to be given it: one alone, "djv",
-        //! is the server's own, "192.168.1.40\djv", so that a PC in a
+        //! is the server's own, "192.168.0.100\djv", so that a PC in a
         //! domain does not look for it there. One with a domain or an "@"
         //! is left as it is.
         DJV_MODELS_API std::string shareAccountName(const std::string& user, const std::string& unc);

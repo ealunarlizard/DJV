@@ -18,15 +18,29 @@ import { promisify } from 'node:util';
 
 const scryptAsync = promisify(scrypt);
 
-// The administrator. Its password is not set on the admin page but in a
-// file on the server (see ROOT_PASSWORD_FILE in server.js), so that whoever
-// runs the server can always get back in.
-export const ROOT_USER = 'lldjv';
-
 // A user name goes into URLs, logs and the admin page, so it is kept to what
 // is safe in all of them, like the session names. DJV checks the same
 // (models::isValidSyncUser()).
 const USER_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+// The administrator: ADMIN_USER in the environment, "admin" when it is not
+// set. A studio names its own in the .env of its deployment (or, for a
+// server run from the source tree, the .env at the top of it), so that the
+// name is not in the code. Its password is not set on the admin page but in
+// a file on the server (see ROOT_PASSWORD_FILE in server.js), so that
+// whoever runs the server can always get back in.
+//
+// Read once, when the server starts: a server that changed its
+// administrator would leave the old one in config.json as an ordinary user.
+export const ROOT_USER = adminUser(process.env.ADMIN_USER);
+
+function adminUser(value) {
+  const name = (value ?? '').trim() || 'admin';
+  if (!USER_PATTERN.test(name)) {
+    throw new Error(`ADMIN_USER "${name}" is not a user name: letters, digits, ".", "_" and "-", at most 64.`);
+  }
+  return name;
+}
 
 export const MIN_PASSWORD = 8;
 export const MAX_PASSWORD = 1024;

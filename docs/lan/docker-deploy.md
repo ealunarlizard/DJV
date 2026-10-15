@@ -1,7 +1,7 @@
 # Deploying the DJV sync server with Docker
 
 This guide installs the DJV sync server on the studio's dev server, a Windows
-machine at **192.168.1.40** running Docker Desktop. The server listens on port
+machine at **192.168.0.100** running Docker Desktop. The server listens on port
 **8877**. Install it on your own PC first to check that everything works; the
 steps are the same there, at `http://localhost:8877`.
 
@@ -41,6 +41,46 @@ This builds the image `djv-sync-server:<version>`, tagged `latest` too, and
 writes `..\dist\djv-sync-server-<version>.zip`. The version comes from
 `server\package.json`.
 
+### Pushing the image to a private registry
+
+The image can also go to a private registry, GitHub's for example, so that
+the dev server pulls it rather than loading it from the package. Then an
+update needs no new package; only a new version in `.env`.
+
+1. **Make a token.** GitHub's registry takes a *classic* personal access
+   token, not a fine-grained one: `write:packages` to push, and, for the dev
+   server, a second one with only `read:packages`. If the organization uses
+   single sign-on, authorize each token for it (*Configure SSO*).
+2. **Sign in** on the machine that builds:
+   `docker login ghcr.io -u <user>`, with the first token as the password.
+   Docker keeps it in the Windows Credential Manager.
+3. **Build and push:**
+
+   ```powershell
+   .\build-package.ps1 -Push ghcr.io/<organization>/djv-sync-server
+   ```
+
+   This pushes `<version>` and `latest`, and the package's `.env.example`
+   names the repository as `DJV_SYNC_IMAGE`. The repository must be in lower
+   case.
+
+The first push makes the package, private. Who may pull it is set on the
+package's page, under *Package settings → Manage access*. If the push is
+refused, an owner of the organization may have to allow members to make
+packages (the organization's *Settings → Packages*).
+
+To have the dev server pull it:
+
+1. Sign in there once, as the Windows user that runs `start.ps1`:
+   `docker login ghcr.io -u <user>`, with the read-only token.
+2. Set `DJV_SYNC_IMAGE=ghcr.io/<organization>/djv-sync-server` in its `.env`.
+   A `.env` made from an earlier package has no such line: add it.
+3. Run `.\start.ps1`.
+
+`start.ps1` pulls the image at every start. When the registry cannot be
+reached, it starts the copy Docker already has, or else loads the package's
+`.tar`.
+
 ## First install
 
 1. **Install Docker Desktop** on the dev server. Under its settings, turn on
@@ -54,8 +94,9 @@ writes `..\dist\djv-sync-server-<version>.zip`. The version comes from
      `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
    - Or unblock the files with `Get-ChildItem | Unblock-File`.
 3. **Make the passwords** with `.\new-secrets.ps1`. It writes two files:
-   - `secrets\lldjv_password.txt`: 24 random characters, for the
-     administrator `lldjv`.
+   - `secrets\admin_password.txt`: 24 random characters, for the
+     administrator. Its user name is `ADMIN_USER` in `.env`, `admin` unless
+     you set another before the first start.
    - `secrets\share_password.txt`: 16 random letters and digits, for the
      media share's `djv` account. Give `-SharePassword '...'` to use the
      studio's standard password instead.
@@ -69,21 +110,26 @@ writes `..\dist\djv-sync-server-<version>.zip`. The version comes from
    `DJV_MEDIA_DIR=D:\Media` into `.env`, so that the server's portal can
    upload videos into that folder (see *The media folder* below).
 5. **Start the server** with `.\start.ps1`. It:
-   1. loads the image from the `.tar` when Docker does not have it yet;
+   1. pulls the image from the registry when `DJV_SYNC_IMAGE` is set (see
+      *Pushing the image to a private registry* above), and otherwise loads
+      it from the `.tar` when Docker does not have it yet;
    2. starts the container;
    3. waits for the server to answer;
    4. prints the addresses of the portal and the admin page.
-6. **Configure it.** Open `http://192.168.1.40:8877/admin` and sign in as
-   **lldjv**, with the password from `secrets\lldjv_password.txt`.
+6. **Configure it.** Open `http://192.168.0.100:8877/admin` and sign in as
+   the administrator (**admin**, or your `ADMIN_USER`), with the password
+   from `secrets\admin_password.txt`.
    1. Under **Server settings**, set:
-      - **Media share**: `\\192.168.1.40\media`;
+      - **Media share**: `\\192.168.0.100\media`;
       - **Share user**: `djv`;
       - **Expected DJV version**: the version the studio runs.
    2. Under **Users**, add each reviewer with a password.
-7. **Set up the PCs**, as the manual's *Studio network* page says. The default
-   server address in DJV is already `http://192.168.1.40:8877`, so a reviewer
-   only types their user name and password into the **Sync Server** settings.
-8. **Tell the reviewers about the portal**, `http://192.168.1.40:8877`, where
+7. **Set up the PCs**, as the manual's *Studio network* page says. DJV's
+   default server address is the one it was built with: `DJV_SYNC_SERVER` in
+   the `.env` at the top of the DJV source (see `.env.example`). With the
+   studio's address there, a reviewer only types their user name and
+   password into the **Sync Server** settings.
+8. **Tell the reviewers about the portal**, `http://192.168.0.100:8877`, where
    they upload videos and make sessions with the same sign-in
    ([portal.md](portal.md)).
 
@@ -93,11 +139,11 @@ writes `..\dist\djv-sync-server-<version>.zip`. The version comes from
 | --- | --- |
 | `data\djv-sync.db` | The sessions, their notes, and the sign-ins. This is the bind-mounted SQLite file. |
 | `data\config.json` | The server settings and the users. The passwords in it are hashed with scrypt. |
-| `secrets\lldjv_password.txt` | The administrator's password. `lldjv` is made, or given this password, at every start. |
+| `secrets\admin_password.txt` | The administrator's password. The administrator (`ADMIN_USER`) is made, or given this password, at every start. |
 | `secrets\share_password.txt` | The `djv` account's password. Signed-in DJVs map the share with it. |
 | `DJV_MEDIA_DIR` (in `.env`), for example `D:\Media` | The shared folder of videos. The portal lists it and uploads to it; unfinished uploads wait in its hidden `.djv-uploads` folder. |
 | `backups\` | What `backup.ps1` saves. |
-| `.env` | The deployment's settings. |
+| `.env` | The deployment's settings, among them `ADMIN_USER`. |
 
 Inside the container, these are `/data`, `/media` and `/run/secrets/...`.
 The secrets reach the container as Docker secrets: they are in neither the
@@ -151,7 +197,7 @@ On a Linux host, set `DB_EXCLUSIVE=0` in `.env`.
 | Follow its log | `docker compose logs -f` |
 | Back up | `.\backup.ps1`, or `.\backup.ps1 -Keep 30` to keep the last 30. A scheduled task can run it nightly. Also keep a copy of `secrets\` and `data\config.json`. |
 | Restart | `.\stop.ps1`, then `.\start.ps1` |
-| Change the lldjv password | Put the new one in `secrets\lldjv_password.txt`, then restart. Earlier admin sign-ins end. |
+| Change the admin password | Put the new one in `secrets\admin_password.txt`, then restart. Earlier admin sign-ins end. |
 | Change the share password | Put the new one in `secrets\share_password.txt`, run `.\share-setup.ps1 -Path D:\Media` as an administrator, then restart. The PCs get it the next time they sign in. |
 | Add or remove a reviewer | On the admin page, under **Users**. |
 
@@ -173,6 +219,18 @@ On a Linux host, set `DB_EXCLUSIVE=0` in `.env`.
 3. Run `.\stop.ps1`, then `.\start.ps1`. The new image is loaded, and the
    server carries on from the same data.
 
+With `DJV_SYNC_IMAGE` set, step 1 is not needed unless the scripts
+changed: set the new version and run `.\start.ps1`, which pulls it.
+
+### From 2.1 to 2.2
+
+Version 2.2 takes the administrator's name from `ADMIN_USER` in `.env`, and
+its password from `secrets\admin_password.txt`. `start.ps1` moves an older
+deployment over by itself: it renames the old password file, which was
+named after the administrator, and writes that name into `.env` as
+`ADMIN_USER`. The administrator, its password and the users stay as they
+were.
+
 ### From 2.0 to 2.1
 
 Version 2.1 adds the review portal.
@@ -181,7 +239,7 @@ Version 2.1 adds the review portal.
    `.\share-setup.ps1 -Path D:\Media` again as an administrator, or add
    `DJV_MEDIA_DIR=D:\Media` to `.env` by hand.
 2. Sessions made with 2.0 have no list of people, so every user sees them.
-   lldjv can **Edit** one on the portal to limit it.
+   The administrator can **Edit** one on the portal to limit it.
 3. Review links and two-video sessions need the DJV built with it, on every
    PC. A DJV from before still syncs notes.
 
@@ -189,7 +247,7 @@ Version 2.1 adds the review portal.
 
 1. Build the package, unzip it into a scratch folder, and run
    `.\new-secrets.ps1` and `.\start.ps1` there.
-2. Open `http://localhost:8877/admin`. Sign in as lldjv, and add a user
+2. Open `http://localhost:8877/admin`. Sign in as admin, and add a user
    `test`. Set `DJV_MEDIA_DIR` in `.env` to a test folder of videos, such as
    `C:\djv-media-test`, before starting, so that the portal has something to
    list and somewhere to upload.

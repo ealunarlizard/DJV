@@ -55,6 +55,7 @@ set(TLRENDER_FFMPEG_MINIMAL OFF CACHE BOOL "")
 # requires Python 3.
 set(TLRENDER_USD ON CACHE BOOL "")</code></pre>
 <p>For the number of build jobs, export <code>CMAKE_BUILD_PARALLEL_LEVEL</code>.</p>
+<p>What a studio keeps to itself goes in <code>.env</code> at the top of the source tree, which is not tracked either. Copy <code>.env.example</code>, which has the same keys with example values, and change them. <code>DJV_SYNC_SERVER</code> is the sync server a new DJV starts with (see <a href="lan-setup.html">Studio network</a>); CMake reads it when it configures, and an edit takes effect on the next build. Without a <code>.env</code>, a build takes the example address.</p>
 <h2 id="linux">Linux</h2>
 <p>Requirements: Git and CMake 3.31.</p>
 <h3>Debian and Ubuntu</h3>

@@ -9,9 +9,9 @@ script.
 .DESCRIPTION
 Writes two files, each holding one password and nothing else:
 
-  secrets\lldjv_password.txt  The administrator's password: 24 random
+  secrets\admin_password.txt  The administrator's password: 24 random
                               characters. Sign in to the admin page with it,
-                              as lldjv.
+                              as ADMIN_USER of .env ("admin" unless set).
   secrets\share_password.txt  The password of the "djv" Windows account the
                               media share is read with: 16 random letters
                               and digits, or the one given. share-setup.ps1
@@ -87,7 +87,7 @@ function Write-Secret([string]$Name, [string]$Value) {
     Write-Host "Wrote $path"
 }
 
-Write-Secret 'lldjv_password.txt' (New-Password 24 @($upper, $lower, $digits, $symbols))
+Write-Secret 'admin_password.txt' (New-Password 24 @($upper, $lower, $digits, $symbols))
 
 if ($SharePassword) {
     if ($SharePassword.Length -lt 8) {

@@ -1,7 +1,7 @@
 # The review portal
 
 The sync server has a web page, the **portal**, at its address:
-`http://192.168.1.40:8877`. Everyone signs in to it with the same user name
+`http://192.168.0.100:8877`. Everyone signs in to it with the same user name
 and password they use in DJV. In the portal you can:
 
 - upload videos to the media share;
@@ -10,7 +10,7 @@ and password they use in DJV. In the portal you can:
 - make a session of one video, or of two to compare;
 - open a session in DJV with its **review** link.
 
-The administrator, `lldjv`, sees every session. The admin page, for users and
+The administrator, `admin`, sees every session. The admin page, for users and
 server settings, is still at `/admin`.
 
 ## Videos
@@ -51,7 +51,7 @@ Names must be valid on Windows:
 
 ### Deleting
 
-Only `lldjv` deletes videos, with **Delete** in the list. If a session still
+Only `admin` deletes videos, with **Delete** in the list. If a session still
 uses the file, the portal names the session and asks again first.
 
 ## Sessions
@@ -84,7 +84,7 @@ sessions therefore never share a name.
 
 ### Who sees a session
 
-Only the people invited, whoever made it, and `lldjv` see the session or can
+Only the people invited, whoever made it, and `admin` see the session or can
 open it in DJV. Anyone else gets *not one you were asked to* from DJV.
 
 A session someone starts in DJV by typing a new name belongs to them alone.
@@ -92,11 +92,11 @@ It shows on their portal without a description; they can **Edit** it there
 to add one, set its date and videos, and invite people.
 
 Sessions made before server 2.1 are open to everyone, and are marked
-*everyone (an older session)*. `lldjv` can edit one to limit it.
+*everyone (an older session)*. `admin` can edit one to limit it.
 
 ### Editing and deleting
 
-The person who made a session, and `lldjv`, see **Edit** and **Delete**.
+The person who made a session, and `admin`, see **Edit** and **Delete**.
 
 - **Edit** changes the description, the date, the people or the videos.
   - A DJV in the session follows a change of videos.
@@ -131,7 +131,7 @@ without `autoConnect` joins at once, as `true` does.
   - **Settings → Sync Server → Review links** says which DJV the links open.
   - **Use this DJV** makes it this one.
 - **The portal opened from the server DJV uses.** The address may differ:
-  with DJV set to `http://192.168.1.40:8877`, a portal opened through the
+  with DJV set to `http://192.168.0.100:8877`, a portal opened through the
   server's name, or as `localhost` on the server itself, works too. DJV asks
   the address in the link which server it is, and joins only if it is its
   own; it always joins on the address in its settings. A link for another
@@ -160,6 +160,6 @@ for the portal's address, and it will not ask again.
 | DJV says the session *was deleted on the server* | Someone deleted it, or took you out of it. Leave it in the Review tool. |
 | The session opens, but not the video | The media drive is not mapped yet, or the file was moved. See the **Drive** line in the Sync Server settings. |
 | An upload stays at *retrying* | The server cannot be reached. It carries on when the server is back; **Pause** it meanwhile if you like. |
-| *There is already a file …* | Give the file another name, or ask `lldjv` to delete the old one. |
+| *There is already a file …* | Give the file another name, or ask `admin` to delete the old one. |
 | *The media folder has … GB free* | The share's drive is full. Ask whoever runs the dev server. |
 | **Videos** says *the server has no media folder* | The server was started without `DJV_MEDIA_DIR`. See [docker-deploy.md](docker-deploy.md). |

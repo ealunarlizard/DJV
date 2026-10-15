@@ -14,6 +14,7 @@ import path from 'node:path';
 
 import { pathProblem, sharePath } from '../media.js';
 import { login, start } from './helpers.js';
+import { ROOT_USER } from '../users.js';
 
 const CHUNK = 1024;
 
@@ -64,7 +65,7 @@ async function studio(options = {}) {
     const res = await login(s.base, username, `${username}-password`);
     people[username] = as((await json(res)).token);
   }
-  s.server.config.update({ storage: { unc: '\\\\192.168.1.40\\media', user: 'djv' } });
+  s.server.config.update({ storage: { unc: '\\\\192.168.0.100\\media', user: 'djv' } });
   return {
     ...s,
     mediaDir,
@@ -93,7 +94,7 @@ test('a media path must be a plain path inside the folder that Windows can use',
   ]) {
     assert.notEqual(pathProblem(bad), '', bad);
   }
-  assert.equal(sharePath('\\\\192.168.1.40\\media', 'a/b.mov'), '//192.168.1.40/media/a/b.mov');
+  assert.equal(sharePath('\\\\192.168.0.100\\media', 'a/b.mov'), '//192.168.0.100/media/a/b.mov');
   assert.equal(sharePath('', 'a/b.mov'), '');
 });
 
@@ -262,7 +263,7 @@ test('a session made on the portal has its videos, date, description and people'
     // DJV reads the two videos as the session's media, A and B.
     const state = await json(await s.ben(`${s.base}/api/sessions/${made.session}`));
     assert.equal(state.media.path, 'shots/sh010/v001.mp4');
-    assert.equal(state.media.pathAbsolute, '//192.168.1.40/media/shots/sh010/v001.mp4');
+    assert.equal(state.media.pathAbsolute, '//192.168.0.100/media/shots/sh010/v001.mp4');
     assert.equal(state.media.sharedBy, 'Anna');
     assert.equal(state.media.compare.path, 'shots/sh010/v002.mp4');
 
@@ -287,7 +288,7 @@ test('a session made on the portal has its videos, date, description and people'
     }
 
     const { people } = await json(await s.ben(`${s.base}/api/people`));
-    assert.deepEqual(people.map((p) => p.username).sort(), ['anna', 'ben', 'cleo', 'lldjv']);
+    assert.deepEqual(people.map((p) => p.username).sort(), ['anna', 'ben', 'cleo', ROOT_USER].sort());
   } finally {
     await s.stop();
   }

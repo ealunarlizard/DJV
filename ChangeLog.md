@@ -28,6 +28,9 @@ Changes:
   A link with autoConnect=false only fills the session in. A link from the
   portal opened at another address of the same server (localhost, a host
   name) is followed, and every step of a link is in the System Log.
+* The sync server a new DJV starts with is set when DJV is built, by
+  DJV_SYNC_SERVER in a .env file (see .env.example), and the sync server's
+  administrator is named by ADMIN_USER.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 * Export now has options for specifying the width or a custom size.

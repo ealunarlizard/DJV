@@ -5,8 +5,8 @@
   The DJV sync server's admin page. Self-contained -- no fonts, scripts or
   styles from elsewhere -- since the studio network it runs on need not reach
   the internet. Everything it shows comes from the /api/admin requests, which
-  only the administrator (lldjv) may use; signing in here is signing in as
-  that user, the same way DJV signs in.
+  only the administrator (ADMIN_USER on the server) may use; signing in here
+  is signing in as that user, the same way DJV signs in.
 -->
 <html lang="en">
 <head>
@@ -66,9 +66,9 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 <main>
   <section id="login" hidden>
     <h2>Sign in</h2>
-    <p class="hint">As the administrator, <code>lldjv</code>. Its password is in the server's secrets folder.</p>
+    <p class="hint">As the administrator: the user named by <code>ADMIN_USER</code> in the server's <code>.env</code>, <code>admin</code> unless it says otherwise. Its password is in the server's secrets folder.</p>
     <form id="login-form" class="form">
-      <label for="username">User</label><input type="text" id="username" value="lldjv" autocomplete="username">
+      <label for="username">User</label><input type="text" id="username" autocomplete="username">
       <label for="password">Password</label><input type="password" id="password" autocomplete="current-password">
     </form>
     <div class="actions"><button class="primary" form="login-form">Sign in</button></div>
@@ -111,7 +111,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
       <h2>Server settings</h2>
       <form id="settings" class="form">
         <label for="name">Server name</label><input type="text" id="name">
-        <label for="unc">Media share (UNC)</label><input type="text" id="unc" placeholder="\\192.168.1.40\media">
+        <label for="unc">Media share (UNC)</label><input type="text" id="unc" placeholder="\\192.168.0.100\media">
         <label for="share-user">Share user</label><input type="text" id="share-user" placeholder="djv">
         <span>Share password</span><span id="share-password"></span>
         <label for="djv-version">Expected DJV version</label><input type="text" id="djv-version" placeholder="3.7.5 (empty: not checked)">
@@ -242,7 +242,8 @@ async function start() {
     $('login').hidden = true;
     $('content').hidden = false;
     $('sign-out').hidden = false;
-    $('who').textContent = 'Signed in as lldjv';
+    const hello = await request('GET', '/api/hello').then((res) => res.json()).catch(() => ({}));
+    $('who').textContent = hello.user ? `Signed in as ${hello.user.username}` : '';
     await refresh();
     say('');
   } catch (error) {
@@ -264,7 +265,7 @@ $('login-form').addEventListener('submit', async (event) => {
       // Signed in, but not as someone who may manage the server: let go of
       // the sign-in again rather than keep it here.
       await fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${json.token}` } });
-      throw new Error('Only the administrator (lldjv) can manage the server.');
+      throw new Error('Only the administrator can manage the server.');
     }
     $('password').value = '';
     setToken(json.token);

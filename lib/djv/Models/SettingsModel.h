@@ -306,14 +306,20 @@ namespace djv
         //! characters a client identifier can have.
         DJV_MODELS_API std::string defaultSyncClientId();
 
+        //! The sync server a PC starts with: DJV_SYNC_SERVER of the .env
+        //! file DJV was built with (see .env.example), so that a studio's
+        //! build points at its own server without the address being in the
+        //! code. Empty when the build was given none.
+        DJV_MODELS_API std::string defaultSyncServer();
+
         //! Sync server settings: the server this PC reviews with, who signs
         //! in to it, and where the media is reached.
         struct DJV_MODELS_API_TYPE SyncSettings
         {
-            //! The sync server. The default is the studio's dev server (see
-            //! docs/lan-setup.html), so that a new PC only needs a user name
-            //! and a password.
-            std::string server = "http://192.168.1.40:8877";
+            //! The sync server. The default is the one the build was given
+            //! (defaultSyncServer()), so that a new PC only needs a user
+            //! name and a password.
+            std::string server = defaultSyncServer();
 
             //! The user who signs in to the server. The password is not
             //! here: it is kept in the Windows Credential Manager (see
@@ -329,7 +335,7 @@ namespace djv
             std::string driveLetter;
 
             //! The media share the server last said it has, e.g.
-            //! "\\192.168.1.40\media", kept so that the drive is mapped even
+            //! "\\192.168.0.100\media", kept so that the drive is mapped even
             //! when the server cannot be reached at start.
             std::string shareUnc;
 

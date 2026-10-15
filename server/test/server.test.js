@@ -9,6 +9,7 @@ import path from 'node:path';
 
 // The fetch that signs in as the test server's administrator.
 import { fetch, start } from './helpers.js';
+import { ROOT_USER } from '../users.js';
 
 function marker(id, text, extra = {}) {
   return {
@@ -330,8 +331,8 @@ test('a session keeps the media it is about', async () => {
     assert.deepEqual(await res.json(), { rev: 3 });
 
     const [set, cleared] = await events;
-    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', user: 'lldjv', media: shot });
-    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', user: 'lldjv', media: null });
+    assert.deepEqual(set, { type: 'media', rev: 2, clientId: 'b', user: ROOT_USER, media: shot });
+    assert.deepEqual(cleared, { type: 'media', rev: 3, clientId: 'c', user: ROOT_USER, media: null });
 
     await putMedia(s.base, 'sh010', shot);
     const state = await (await fetch(`${s.base}/api/sessions/sh010`)).json();

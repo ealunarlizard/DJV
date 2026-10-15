@@ -19,12 +19,27 @@ output. The zip holds:
 
 Never the secrets, the data or the backups of a deployment made in deploy\.
 
+With -Push, the image is also pushed to a registry under the given
+repository, as <version> and latest, and the package's .env.example names
+it as DJV_SYNC_IMAGE, so that start.ps1 pulls it from there. The .tar stays
+in the package, for a server that cannot reach the registry. Sign in to the
+registry first ("docker login ghcr.io", with a token that can write
+packages).
+
+.PARAMETER Push
+The repository to push the image to, for example
+ghcr.io/<organization>/djv-sync-server. The registry wants it in lower case.
+
 .EXAMPLE
 .\build-package.ps1
+
+.EXAMPLE
+.\build-package.ps1 -Push ghcr.io/<organization>/djv-sync-server
 #>
 [CmdletBinding()]
 param(
-    [string]$OutDir = (Join-Path $PSScriptRoot '..\dist')
+    [string]$OutDir = (Join-Path $PSScriptRoot '..\dist'),
+    [string]$Push
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,6 +62,17 @@ $name = "djv-sync-server-$version"
 Write-Host "Building $image ..."
 Invoke-Docker build --pull -t $image -t 'djv-sync-server:latest' $PSScriptRoot
 
+if ($Push) {
+    # Both tags are pushed: <version> for the deployments that pin it, as a
+    # package's .env does, and latest for the ones that follow it.
+    foreach ($tag in $version, 'latest') {
+        $remote = "${Push}:$tag"
+        Write-Host "Pushing $remote ..."
+        Invoke-Docker tag $image $remote
+        Invoke-Docker push $remote
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).ProviderPath
 $stage = Join-Path $OutDir $name
@@ -59,8 +85,11 @@ $deploy = Join-Path $PSScriptRoot 'deploy'
 foreach ($file in 'docker-compose.yml', 'start.ps1', 'stop.ps1', 'backup.ps1', 'new-secrets.ps1', 'share-setup.ps1', 'README.md') {
     Copy-Item (Join-Path $deploy $file) $stage
 }
-# The package runs the image it carries, rather than whatever "latest" is.
-(Get-Content (Join-Path $deploy '.env.example')) -replace '^DJV_SYNC_VERSION=.*$', "DJV_SYNC_VERSION=$version" |
+# The package runs the image it carries, rather than whatever "latest" is,
+# and pulls it from the registry it was pushed to, if any.
+(Get-Content (Join-Path $deploy '.env.example')) `
+    -replace '^DJV_SYNC_VERSION=.*$', "DJV_SYNC_VERSION=$version" `
+    -replace '^DJV_SYNC_IMAGE=.*$', "DJV_SYNC_IMAGE=$Push" |
     Set-Content (Join-Path $stage '.env.example') -Encoding ASCII
 
 $docs = Join-Path $stage 'docs'

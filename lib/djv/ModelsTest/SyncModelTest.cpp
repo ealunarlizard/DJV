@@ -229,7 +229,9 @@ namespace djv
 
             models::SyncSettings sync;
             FTK_CHECK(models::isValidSyncClientId(sync.clientId));
-            FTK_CHECK("http://192.168.1.40:8877" == sync.server);
+            // The server the build was given, from .env or .env.example.
+            FTK_CHECK(models::defaultSyncServer() == sync.server);
+            FTK_CHECK(sync.server.empty() || 0 == sync.server.rfind("http", 0));
             FTK_CHECK(sync.username.empty());
             sync.server = "http://10.0.0.5:8787";
             sync.username = "anna";
@@ -310,11 +312,11 @@ namespace djv
 
             // The share's account is the server's own unless it says
             // otherwise, so that a PC in a domain does not look it up there.
-            FTK_CHECK("192.168.1.40" == models::getUncHost("\\\\192.168.1.40\\media"));
+            FTK_CHECK("192.168.0.100" == models::getUncHost("\\\\192.168.0.100\\media"));
             FTK_CHECK("nas" == models::getUncHost("//nas/media/shots"));
             FTK_CHECK(models::getUncHost("C:\\media").empty());
-            FTK_CHECK("192.168.1.40\\djv" == models::shareAccountName("djv", "\\\\192.168.1.40\\media"));
-            FTK_CHECK("STUDIO\\djv" == models::shareAccountName("STUDIO\\djv", "\\\\192.168.1.40\\media"));
+            FTK_CHECK("192.168.0.100\\djv" == models::shareAccountName("djv", "\\\\192.168.0.100\\media"));
+            FTK_CHECK("STUDIO\\djv" == models::shareAccountName("STUDIO\\djv", "\\\\192.168.0.100\\media"));
             FTK_CHECK("djv@studio.local" == models::shareAccountName("djv@studio.local", "\\\\nas\\media"));
             FTK_CHECK(models::shareAccountName("", "\\\\nas\\media").empty());
 
@@ -347,12 +349,12 @@ namespace djv
             hello["authRequired"] = true;
             hello["signedIn"] = true;
             hello["user"] = { { "username", "anna" }, { "name", "Anna" }, { "admin", false } };
-            hello["storage"] = { { "unc", "\\\\192.168.1.40\\media" }, { "user", "djv" }, { "password", "share-password" } };
+            hello["storage"] = { { "unc", "\\\\192.168.0.100\\media" }, { "user", "djv" }, { "password", "share-password" } };
             auto info = models::parseSyncServerInfo(hello);
             FTK_CHECK(models::SyncServerState::Ok == info.state);
             FTK_CHECK("Dev review server" == info.name);
             FTK_CHECK("2.0.0" == info.serverVersion);
-            FTK_CHECK("\\\\192.168.1.40\\media" == info.storageUnc);
+            FTK_CHECK("\\\\192.168.0.100\\media" == info.storageUnc);
             FTK_CHECK("djv" == info.shareUser);
             FTK_CHECK("share-password" == info.sharePassword);
             FTK_CHECK("3.7.5" == info.djvVersion);
@@ -744,10 +746,10 @@ namespace djv
         void SyncModelTest::_deepLink()
         {
             // The portal's review links.
-            auto link = models::parseDeepLink("djv://session/20261012-sh010-ab12?server=http%3A%2F%2F192.168.1.40%3A8877");
+            auto link = models::parseDeepLink("djv://session/20261012-sh010-ab12?server=http%3A%2F%2F192.168.0.100%3A8877");
             FTK_CHECK(link.has_value());
             FTK_CHECK("20261012-sh010-ab12" == link->session);
-            FTK_CHECK("http://192.168.1.40:8877" == link->server);
+            FTK_CHECK("http://192.168.0.100:8877" == link->server);
             // As browsers and Windows may pass them on: other slashes, the
             // scheme in capitals, a trailing slash, more in the query.
             link = models::parseDeepLink("DJV:session/sh010/?x=1&server=http://localhost:8877/#top");
@@ -793,10 +795,10 @@ namespace djv
 
             // The link must be for the server in the settings, however it is
             // written.
-            FTK_CHECK(models::isSameSyncServer("http://192.168.1.40:8877", "HTTP://192.168.1.40:8877/"));
+            FTK_CHECK(models::isSameSyncServer("http://192.168.0.100:8877", "HTTP://192.168.0.100:8877/"));
             FTK_CHECK(models::isSameSyncServer("http://Server", "http://server:80"));
-            FTK_CHECK(!models::isSameSyncServer("http://192.168.1.40:8877", "http://192.168.1.41:8877"));
-            FTK_CHECK(!models::isSameSyncServer("http://192.168.1.40:8877", "http://192.168.1.40:8878"));
+            FTK_CHECK(!models::isSameSyncServer("http://192.168.0.100:8877", "http://192.168.0.101:8877"));
+            FTK_CHECK(!models::isSameSyncServer("http://192.168.0.100:8877", "http://192.168.0.100:8878"));
             FTK_CHECK(!models::isSameSyncServer("http://localhost:8877", "http://127.0.0.1:8877"));
 
 #if defined(_WIN32)
@@ -813,7 +815,7 @@ namespace djv
                 auto second = models::DeepLinkListener::create(_context, pipe);
                 FTK_CHECK(!second->isListening());
 
-                const std::string sent = "djv://session/sh010?server=http%3A%2F%2F192.168.1.40%3A8877";
+                const std::string sent = "djv://session/sh010?server=http%3A%2F%2F192.168.0.100%3A8877";
                 FTK_CHECK(models::sendDeepLink(sent, pipe));
                 FTK_CHECK(models::sendDeepLink(sent + "-again", pipe));
                 const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
