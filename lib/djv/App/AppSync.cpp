@@ -17,8 +17,10 @@
 #include <ftk/Core/Timer.h>
 
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <system_error>
 #include <thread>
 
 namespace djv
@@ -223,6 +225,9 @@ namespace djv
             {
                 const std::filesystem::path root = ftk::toFileSystem(p.lanModel->observeMediaRoot()->get());
                 media = models::syncMediaFromPath(a->path.get(), root);
+                // Who shares it is who the markers are put down to: the user
+                // signed in, when there is one.
+                media->sharedBy = p.markersModel->getUser();
                 // The file compared with it goes along, so that the session
                 // compares the same two.
                 const auto& active = p.filesModel->getActive();
@@ -233,6 +238,118 @@ namespace djv
                 }
             }
             p.syncModel->setLocalMedia(media);
+        }
+
+        namespace
+        {
+            //! Whether a file open here is one of a sync session's videos:
+            //! described as the session describes its videos, it is the same
+            //! file inside the network media folder, or the same file on the
+            //! share; failing both, the file system says it is the file the
+            //! session's path leads to here.
+            bool isSessionVideo(
+                const std::string& path,
+                const std::string& videoPath,
+                const std::string& videoPathAbsolute,
+                const std::filesystem::path& resolved,
+                const std::filesystem::path& mediaRoot)
+            {
+                const models::SyncMedia local = models::syncMediaFromPath(path, mediaRoot);
+                if (!videoPath.empty() && local.path == videoPath)
+                {
+                    return true;
+                }
+                if (!videoPathAbsolute.empty() && local.pathAbsolute == videoPathAbsolute)
+                {
+                    return true;
+                }
+                std::error_code ec;
+                return
+                    !resolved.empty() &&
+                    std::filesystem::equivalent(ftk::toFileSystem(path), resolved, ec) &&
+                    !ec;
+            }
+        }
+
+        void App::_syncDrawingSourcesUpdate()
+        {
+            FTK_P();
+            // A drawing is shared by the session's video it is on, which
+            // each PC opens under a path and an identity of its own: here,
+            // the files open that are the session's videos, each with the
+            // session's key for it. The drawings on any other file stay on
+            // this PC.
+            std::map<std::string, std::string> sources;
+            const auto& media = p.syncModel->observeMedia()->get();
+            if (media.has_value())
+            {
+                const std::filesystem::path root = ftk::toFileSystem(p.lanModel->observeMediaRoot()->get());
+                struct Video
+                {
+                    std::string key;
+                    std::string path;
+                    std::string pathAbsolute;
+                    std::filesystem::path resolved;
+                };
+                std::vector<Video> videos;
+                bool exists = false;
+                videos.push_back({
+                    models::syncMediaKey(media.value()),
+                    media->path,
+                    media->pathAbsolute,
+                    models::resolveSyncMedia(media.value(), root, exists) });
+                if (media->compare.has_value())
+                {
+                    videos.push_back({
+                        models::syncMediaKey(media->compare.value()),
+                        media->compare->path,
+                        media->compare->pathAbsolute,
+                        models::resolveSyncMedia(media->compare.value(), root, exists) });
+                }
+                for (const auto& file : p.filesModel->getFiles())
+                {
+                    if (!file)
+                    {
+                        continue;
+                    }
+                    for (const auto& video : videos)
+                    {
+                        if (!video.key.empty() &&
+                            isSessionVideo(file->path.get(), video.path, video.pathAbsolute, video.resolved, root))
+                        {
+                            sources[file->id] = video.key;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (sources != p.syncModel->getDrawingSources())
+            {
+                _context->log(
+                    "djv::app::Sync",
+                    sources.empty() ?
+                        std::string("No file open is one of the session's videos: the drawings are not shared") :
+                        ftk::Format("The drawings on {0} open file(s) are shared with the session").
+                            arg(sources.size()).
+                            str());
+            }
+            p.syncModel->setDrawingSources(sources);
+        }
+
+        void App::_reviewUserUpdate()
+        {
+            FTK_P();
+            // The markers and the drawings made here are put down to the
+            // user signed in to the sync server -- the name the server, and
+            // everyone in the session, knows them by -- or to the person
+            // logged in to this PC when no one is.
+            const models::LanAuth& auth = p.lanModel->observeAuth()->get();
+            const std::string user =
+                models::LanAuthState::SignedIn == auth.state && !auth.username.empty() ?
+                auth.username :
+                models::reviewAuthor();
+            p.markersModel->setUser(user);
+            p.annotationsModel->setUser(user);
         }
 
         namespace

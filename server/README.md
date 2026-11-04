@@ -1,12 +1,13 @@
 # DJV sync server
 
 The sync server lets everyone who has a DJV review open see the same markers
-as they are written. Everyone who joins the same *session* sees the same
-markers. When one person adds, edits or deletes a marker, the others see the
-change within a moment.
+and drawings as they are made. Everyone who joins the same *session* sees the
+same markers and drawings. When one person adds, edits or deletes one, the
+others see the change within a moment, with the name of whoever made it.
 
 A session also remembers the media file its markers are about. Someone who
-joins with nothing open gets that file loaded. Drawings are not shared.
+joins with nothing open gets that file loaded. The drawings shared are those
+on the session's videos.
 
 People sign in with a user name and a password, which the administrator
 (`ADMIN_USER`, **admin** unless set) gives them on the admin page the server serves at `/admin`. Once a
@@ -177,15 +178,39 @@ DJV_SYNC_TEST_SERVER=http://127.0.0.1:8877 DJV_SYNC_TEST_USER=test DJV_SYNC_TEST
 
 ## How it works
 
-A session is a set of markers, written as they are in a review file
-(`docs/review-format.html`), together with the media they are about.
+A session is a set of markers and drawings, written as they are in a review
+file (`docs/review-format.html`), together with the media they are about.
+A drawing is one person's strokes on one frame of one of the session's
+videos: an annotation of the review file, with `"media"`, the video's path as
+the session's media gives it (`path`, or `pathAbsolute` when there is no
+`path`), in place of `"sourceId"`, which only means something on the PC that
+wrote it. Each DJV draws it on the file it has open for that path.
 
 The server numbers every change it receives; that number is the *revision*.
 It passes each change to everyone following the session, in that order. The
-change to a marker that reaches the server last is the one that stands, so
-every client ends up with the same markers whatever their clocks say. Deleted
-markers are remembered, so a client that was away learns of the deletion
-instead of sending the marker back.
+change to a marker or a drawing that reaches the server last is the one that
+stands, so every client ends up with the same ones whatever their clocks say.
+Deleted ones are remembered, so a client that was away learns of the deletion
+instead of sending them back.
+
+### Who made what
+
+The server writes into every marker and drawing who made it and who changed
+it last, from the user signed in, rather than taking the client's word:
+
+- `author` is the user who first sent it, and `created` when the client says
+  it was made (now, when it does not say). Both stay as they are after that.
+- `modifiedBy` and `modified` are the user who last changed it and when, by
+  the server's clock. A new one keeps the `modified` its client gives, with
+  the user as `modifiedBy`; it has neither when the client gives none.
+- A marker or a drawing sent again with the same content -- by a DJV that
+  reads less of it than the server keeps, say -- is not a change, and keeps
+  the names and times it had.
+
+The event carries the marker or the drawing as the server keeps it. DJV
+takes the server's version of its own change once it comes back with no
+newer change of its own behind it, so it shows the names everyone else
+sees. An older DJV keeps what it sent until it reads the session again.
 
 A client first reads the session's state, then follows its event stream from
 the revision that state was at, so nothing falls between the two. The changes
@@ -263,9 +288,11 @@ X-DJV-Version: 3.7.5
 | `POST /sessions` | `{ "description"?, "date"?, "members"?, "videos": [a, b?] }` | The new session, as in the list. The server names it `YYYYMMDD-<description>-<4 random>`. |
 | `PUT /sessions/<session>/info` | any of `description`, `date`, `members`, `videos` | The session, as in the list. New videos are a media event. |
 | `DELETE /sessions/<session>` | | `{ "ok": true }`. The streams of the session get a `removed` event. |
-| `GET /sessions/<session>` | | `{ "session", "rev", "media": {...} \| null, "markers": [...], "deleted": [ids] }` |
+| `GET /sessions/<session>` | | `{ "session", "rev", "media": {...} \| null, "markers": [...], "deleted": [ids], "drawings": [...], "deletedDrawings": [ids] }`. `drawings` is always there, even empty: DJV tells by it that the server shares drawings (2.3.0). |
 | `PUT /sessions/<session>/markers/<id>` | `{ "clientId", "marker" }` | `{ "rev" }` |
 | `DELETE /sessions/<session>/markers/<id>?clientId=<id>` | | `{ "rev" }` |
+| `PUT /sessions/<session>/drawings/<id>` | `{ "clientId", "drawing" }`; the drawing has a `"media"` | `{ "rev" }` |
+| `DELETE /sessions/<session>/drawings/<id>?clientId=<id>` | | `{ "rev" }` |
 | `PUT /sessions/<session>/media` | `{ "clientId", "media": { "path", "pathAbsolute", "name", "sharedBy" } }` | `{ "rev" }` |
 | `DELETE /sessions/<session>/media?clientId=<id>` | | `{ "rev" }` |
 | `GET /sessions/<session>/events?since=<rev>` | | Server-sent events |
@@ -281,7 +308,7 @@ An item of `GET /sessions`:
 
 ```json
 {
-  "session": "20261012-sh010-lighting-k7qm", "rev": 12, "markers": 4, "clients": 1,
+  "session": "20261012-sh010-lighting-k7qm", "rev": 12, "markers": 4, "drawings": 2, "clients": 1,
   "media": "v001.mov",
   "description": "SH010 lighting", "date": "2026-10-12", "createdBy": "anna",
   "members": ["anna", "ben"], "open": false, "canEdit": true,
@@ -290,8 +317,9 @@ An item of `GET /sessions`:
 }
 ```
 
-Session names and marker identifiers are letters, digits, `.`, `_` and `-`,
-up to 128 of them. User names follow the same rule, up to 64 of them. A
+Session names and marker and drawing identifiers are letters, digits, `.`,
+`_` and `-`, up to 128 of them. A request is at most 4 MB: a drawing is sent
+whole with each stroke. User names follow the same rule, up to 64 of them. A
 session that has never been written to is empty. The media's fields are text
 of up to 4096 characters, and either `path` or `pathAbsolute` must be given.
 
@@ -314,6 +342,8 @@ The data of each event is JSON:
 
 ```
 { "type": "upsert", "rev": 12, "clientId": "...", "user": "anna", "marker": { ... } }
+{ "type": "upsert-drawing", "rev": 12, "clientId": "...", "user": "anna", "drawing": { ... } }
+{ "type": "delete-drawing", "rev": 13, "clientId": "...", "user": "anna", "id": "..." }
 { "type": "delete", "rev": 13, "clientId": "...", "user": "anna", "id": "..." }
 { "type": "media",  "rev": 14, "clientId": "...", "user": "anna", "media": { ... } | null }
 { "type": "reset",  "rev": 14 }
@@ -324,7 +354,8 @@ The data of each event is JSON:
 tell its own changes coming back from other people's. It is new each time
 DJV connects, because two DJVs can share a user.
 
-`user` is who made the change.
+`user` is who made the change. A DJV from before drawings were shared skips
+the drawing events.
 
 `reset` means the changes after `since` are no longer kept: read the session
 again, and follow it from there.
@@ -358,8 +389,9 @@ Every session is in one SQLite database, `DATA_DIR/djv-sync.db`. For each
 session it holds:
 
 - the revision and the media;
-- the markers;
-- the deleted identifiers;
+- the markers, and the deleted markers' identifiers;
+- the drawings (`drawings`), and the deleted drawings' identifiers
+  (`deleted_drawings`), schema 4;
 - the last 1000 changes;
 - who it is for (`session_info`: the description, date, creator and
   members).

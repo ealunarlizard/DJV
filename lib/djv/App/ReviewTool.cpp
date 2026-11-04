@@ -102,6 +102,37 @@ namespace djv
                 return std::string(buf);
             }
 
+            //! Who wrote a marker or drew a drawing, and who changed it
+            //! last, e.g. "anna, edited by bob 26/07/2026 - 19:22". In a
+            //! shared session this is how the feedback says whose it is,
+            //! and the server writes both names in itself. An edit by the
+            //! author reads "edited" alone.
+            std::string byline(
+                const std::string& author,
+                const std::string& modified,
+                const std::string& modifiedBy)
+            {
+                std::vector<std::string> parts;
+                if (!author.empty())
+                {
+                    parts.push_back(author);
+                }
+                if (!modified.empty() || !modifiedBy.empty())
+                {
+                    std::string edit = "edited";
+                    if (!modifiedBy.empty() && modifiedBy != author)
+                    {
+                        edit += " by " + modifiedBy;
+                    }
+                    if (!modified.empty())
+                    {
+                        edit += " " + formatCreated(modified);
+                    }
+                    parts.push_back(edit);
+                }
+                return ftk::join(parts, ", ");
+            }
+
             //! Whether a marker's span is a single frame.
             bool isSingleFrame(const OTIO_NS::TimeRange& range)
             {
@@ -234,6 +265,21 @@ namespace djv
             std::shared_ptr<ftk::ToolButton> redoButton;
             std::shared_ptr<ftk::PushButton> clearDrawingButton;
 
+            //! The drawings: one row for each person's drawing on a frame
+            //! of a file shown, in time order.
+            std::shared_ptr<ftk::ItemButtonList> drawingListLayout;
+            struct DrawingRow
+            {
+                std::shared_ptr<ftk::ItemButton> button;
+                std::string id;
+                OTIO_NS::RationalTime time;
+            };
+            std::vector<DrawingRow> drawingRows;
+            std::vector<models::ReviewAnnotation> annotations;
+            //! The files shown, by identifier: the drawings listed are
+            //! theirs.
+            std::vector<std::string> activeIds;
+
             std::shared_ptr<ftk::LineEdit> syncServerEdit;
             std::shared_ptr<ftk::LineEdit> syncSessionEdit;
             std::shared_ptr<ftk::PushButton> syncButton;
@@ -268,6 +314,8 @@ namespace djv
             std::optional<OTIO_NS::TimeRange> inOutRange;
 
             std::shared_ptr<ftk::ListObserver<models::ReviewMarker> > markersObserver;
+            std::shared_ptr<ftk::ListObserver<models::ReviewAnnotation> > annotationsObserver;
+            std::shared_ptr<ftk::ListObserver<std::shared_ptr<models::FilesModelItem> > > activeObserver;
             std::shared_ptr<ftk::Observer<tl::TimeUnits> > timeUnitsObserver;
             std::shared_ptr<ftk::Observer<std::shared_ptr<tl::Player> > > playerObserver;
             std::shared_ptr<ftk::Observer<OTIO_NS::RationalTime> > currentTimeObserver;
@@ -396,6 +444,9 @@ namespace djv
             p.sizeSlider->setValue(drawModel->getSize());
             p.sizeSlider->setTooltip("The stroke width, in source pixels.");
 
+            p.drawingListLayout = ftk::ItemButtonList::create(context);
+            p.drawingListLayout->setSpacingRole(ftk::SizeRole::None);
+
             // Sync.
             auto syncWidget = ftk::VerticalLayout::create(context);
             syncWidget->setMarginRole(ftk::SizeRole::MarginSmall);
@@ -454,6 +505,9 @@ namespace djv
             p.bellows["Markers"]->setWidget(p.markerListLayout);
             p.bellows["Markers"]->setToolWidget(markerToolLayout);
             p.bellows["Markers"]->setOpen(true);
+            p.bellows["Drawings"] = ftk::Bellows::create(context, "Drawings", layout);
+            p.bellows["Drawings"]->setWidget(p.drawingListLayout);
+            p.bellows["Drawings"]->setOpen(true);
             p.bellows["Sync"] = ftk::Bellows::create(context, "Sync", layout);
             p.bellows["Sync"]->setWidget(syncWidget);
 
@@ -791,6 +845,53 @@ namespace djv
                     }
                 });
 
+            // The drawings: the arrows walk them as they walk the markers,
+            // going to each one's frame, and Delete removes the drawing,
+            // which can be undone like any other change to the drawings.
+            p.drawingListLayout->setCurrentCallback(
+                [this](int value)
+                {
+                    FTK_P();
+                    if (value >= 0 && value < static_cast<int>(p.drawingRows.size()))
+                    {
+                        _seekTo(p.drawingRows[value].time);
+                    }
+                });
+            p.drawingListLayout->setDeleteCallback(
+                [this](int value)
+                {
+                    FTK_P();
+                    if (value >= 0 && value < static_cast<int>(p.drawingRows.size()))
+                    {
+                        if (auto app = _app.lock())
+                        {
+                            app->getAnnotationsModel()->removeAnnotation(p.drawingRows[value].id);
+                        }
+                    }
+                });
+            p.annotationsObserver = ftk::ListObserver<models::ReviewAnnotation>::create(
+                app->getAnnotationsModel()->observeAnnotations(),
+                [this](const std::vector<models::ReviewAnnotation>& value)
+                {
+                    _p->annotations = value;
+                    _drawingsUpdate();
+                });
+            p.activeObserver = ftk::ListObserver<std::shared_ptr<models::FilesModelItem> >::create(
+                app->getFilesModel()->observeActive(),
+                [this](const std::vector<std::shared_ptr<models::FilesModelItem> >& value)
+                {
+                    FTK_P();
+                    p.activeIds.clear();
+                    for (const auto& item : value)
+                    {
+                        if (item)
+                        {
+                            p.activeIds.push_back(item->id);
+                        }
+                    }
+                    _drawingsUpdate();
+                });
+
             // The labels show times, so they follow the units the timeline
             // shows.
             p.timeUnitsObserver = ftk::Observer<tl::TimeUnits>::create(
@@ -799,6 +900,7 @@ namespace djv
                 {
                     _p->timeUnits = value;
                     _markersUpdate();
+                    _drawingsUpdate();
                 });
 
             // The list shows every marker; the playhead moves the highlight.
@@ -1445,6 +1547,17 @@ namespace djv
                     createdLabel->setVAlign(ftk::VAlign::Center);
                 }
 
+                // Who wrote it, and who changed it last: in a shared session
+                // the feedback of several people sits in one list.
+                const std::string by = byline(marker.author, marker.modified, marker.modifiedBy);
+                if (!by.empty())
+                {
+                    auto byLabel = ftk::Label::create(context, by, card);
+                    byLabel->setMarginRole(ftk::SizeRole::LabelPad, ftk::SizeRole::None);
+                    byLabel->setTextRole(ftk::ColorRole::TextDisabled);
+                    byLabel->setAlign(ftk::HAlign::Left, ftk::VAlign::Top);
+                }
+
                 if (editing)
                 {
                     // Written and edited in place. The marker keeps itself
@@ -1488,6 +1601,147 @@ namespace djv
             _selectionUpdate();
         }
 
+        void ReviewTool::_drawingsUpdate()
+        {
+            FTK_P();
+            std::string currentId;
+            const int current = p.drawingListLayout->getCurrent();
+            if (current >= 0 && current < static_cast<int>(p.drawingRows.size()))
+            {
+                currentId = p.drawingRows[current].id;
+            }
+            p.drawingListLayout->clear();
+            p.drawingRows.clear();
+            auto context = getContext();
+            if (!context)
+            {
+                return;
+            }
+
+            // The drawings on the files shown -- the ones the viewport can
+            // show, and a click can go to -- in time order, and in the order
+            // they were made within a frame.
+            std::vector<models::ReviewAnnotation> drawings;
+            for (const auto& annotation : p.annotations)
+            {
+                if (annotation.time.has_value() &&
+                    !annotation.strokes.empty() &&
+                    std::find(p.activeIds.begin(), p.activeIds.end(), annotation.sourceId) != p.activeIds.end())
+                {
+                    drawings.push_back(annotation);
+                }
+            }
+            std::stable_sort(
+                drawings.begin(),
+                drawings.end(),
+                [](const models::ReviewAnnotation& a, const models::ReviewAnnotation& b)
+                {
+                    return a.time->value() < b.time->rescaled_to(a.time->rate()).value();
+                });
+            if (drawings.empty())
+            {
+                auto label = ftk::Label::create(
+                    context,
+                    "No drawings yet.",
+                    p.drawingListLayout);
+                label->setMarginRole(ftk::SizeRole::MarginSmall);
+                label->setTextRole(ftk::ColorRole::TextDisabled);
+                return;
+            }
+
+            std::weak_ptr<ReviewTool> weak(
+                std::dynamic_pointer_cast<ReviewTool>(shared_from_this()));
+            bool first = true;
+            for (const auto& drawing : drawings)
+            {
+                if (!first)
+                {
+                    ftk::Divider::create(
+                        context, ftk::Orientation::Vertical, p.drawingListLayout);
+                }
+                first = false;
+                auto button = ftk::ItemButton::create(context, p.drawingListLayout);
+                button->setAcceptsKeyFocus(false);
+                button->setTooltip(
+                    "Go to the drawing's frame.\n\n"
+                    "Delete removes the drawing; Undo brings it back.");
+                ftk::setScreenshotTag(button, ftk::Format("Review.Drawing{0}").arg(p.drawingRows.size()));
+                const size_t index = p.drawingRows.size();
+                const OTIO_NS::RationalTime time = drawing.time.value();
+                p.drawingRows.push_back({ button, drawing.id, time });
+                button->setClickedCallback(
+                    [weak, index, time]
+                    {
+                        if (auto widget = weak.lock())
+                        {
+                            widget->_p->drawingListLayout->setCurrent(static_cast<int>(index));
+                            widget->_seekTo(time);
+                            widget->_p->drawingListLayout->takeKeyFocus();
+                        }
+                    });
+
+                auto card = ftk::VerticalLayout::create(context);
+                card->setMarginRole(ftk::SizeRole::MarginInside);
+                card->setSpacingRole(ftk::SizeRole::Spacing);
+                button->setWidget(card);
+
+                auto header = ftk::HorizontalLayout::create(context, card);
+                header->setSpacingRole(ftk::SizeRole::SpacingSmall);
+
+                // The color the drawing starts with, as a quiet hint of which
+                // strokes on the frame it is.
+                auto dot = ftk::ColorDot::create(context, header);
+                dot->setColor(drawing.strokes.front().color);
+                dot->setVAlign(ftk::VAlign::Center);
+
+                auto timeLabel = ftk::Label::create(
+                    context, tl::timeToText(drawing.time.value(), p.timeUnits), header);
+                timeLabel->setMarginRole(ftk::SizeRole::LabelPad, ftk::SizeRole::None);
+                timeLabel->setVAlign(ftk::VAlign::Center);
+
+                auto authorLabel = ftk::Label::create(
+                    context, drawing.author.empty() ? std::string("Unknown") : drawing.author, header);
+                authorLabel->setMarginRole(ftk::SizeRole::LabelPad, ftk::SizeRole::None);
+                authorLabel->setVAlign(ftk::VAlign::Center);
+                authorLabel->setHStretch(ftk::Stretch::Expanding);
+
+                if (!drawing.created.empty())
+                {
+                    auto createdLabel = ftk::Label::create(
+                        context, formatCreated(drawing.created), header);
+                    createdLabel->setMarginRole(ftk::SizeRole::LabelPad, ftk::SizeRole::None);
+                    createdLabel->setTextRole(ftk::ColorRole::TextDisabled);
+                    createdLabel->setVAlign(ftk::VAlign::Center);
+                }
+
+                // How much there is, and who changed it last: the eraser
+                // reaches every drawing on the frame, whoever drew it.
+                std::string detail = drawing.strokes.size() == 1 ?
+                    std::string("1 stroke") :
+                    ftk::Format("{0} strokes").arg(drawing.strokes.size()).str();
+                // Without the author, whom the header shows already, so that
+                // the edit always names who made it.
+                const std::string edit = byline(std::string(), drawing.modified, drawing.modifiedBy);
+                if (!edit.empty())
+                {
+                    detail += ", " + edit;
+                }
+                auto detailLabel = ftk::Label::create(context, detail, card);
+                detailLabel->setMarginRole(ftk::SizeRole::LabelPad, ftk::SizeRole::None);
+                detailLabel->setTextRole(ftk::ColorRole::TextDisabled);
+                detailLabel->setAlign(ftk::HAlign::Left, ftk::VAlign::Top);
+            }
+            for (size_t i = 0; i < p.drawingRows.size(); ++i)
+            {
+                if (p.drawingRows[i].id == currentId)
+                {
+                    p.drawingListLayout->setCurrent(static_cast<int>(i));
+                    break;
+                }
+            }
+            _selectionUpdate();
+        }
+
         void ReviewTool::_selectionUpdate()
         {
             FTK_P();
@@ -1499,6 +1753,11 @@ namespace djv
                 {
                     i->second->setChecked(markerShowing(marker, p.currentTime));
                 }
+            }
+            // And the drawings on it.
+            for (const auto& row : p.drawingRows)
+            {
+                row.button->setChecked(models::sameTime(row.time, p.currentTime));
             }
             _deleteButtonUpdate();
         }

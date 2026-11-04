@@ -29,6 +29,8 @@ namespace djv
             void _media();
             void _lan();
             void _merge();
+            void _attribution();
+            void _drawings();
             void _connect();
             void _deepLink();
             void _live();

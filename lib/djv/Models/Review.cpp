@@ -347,6 +347,8 @@ namespace djv
                 sameTime(time, other.time) &&
                 author == other.author &&
                 created == other.created &&
+                modified == other.modified &&
+                modifiedBy == other.modifiedBy &&
                 strokes == other.strokes;
         }
 
@@ -407,6 +409,14 @@ namespace djv
             {
                 json["created"] = in.created;
             }
+            if (!in.modified.empty())
+            {
+                json["modified"] = in.modified;
+            }
+            if (!in.modifiedBy.empty())
+            {
+                json["modifiedBy"] = in.modifiedBy;
+            }
             json["strokes"] = in.strokes;
         }
 
@@ -418,6 +428,8 @@ namespace djv
             if (json.contains("time")) out.time = jsonToTime(json.at("time"));
             if (json.contains("author")) json.at("author").get_to(out.author);
             if (json.contains("created")) json.at("created").get_to(out.created);
+            if (json.contains("modified")) json.at("modified").get_to(out.modified);
+            if (json.contains("modifiedBy")) json.at("modifiedBy").get_to(out.modifiedBy);
             if (json.contains("strokes")) json.at("strokes").get_to(out.strokes);
         }
 
@@ -439,7 +451,8 @@ namespace djv
                 text == other.text &&
                 author == other.author &&
                 created == other.created &&
-                modified == other.modified;
+                modified == other.modified &&
+                modifiedBy == other.modifiedBy;
         }
 
         bool ReviewMarker::operator != (const ReviewMarker& other) const
@@ -476,6 +489,10 @@ namespace djv
             {
                 json["modified"] = in.modified;
             }
+            if (!in.modifiedBy.empty())
+            {
+                json["modifiedBy"] = in.modifiedBy;
+            }
         }
 
         void from_json(const nlohmann::json& json, ReviewMarker& out)
@@ -488,6 +505,7 @@ namespace djv
             if (json.contains("author")) json.at("author").get_to(out.author);
             if (json.contains("created")) json.at("created").get_to(out.created);
             if (json.contains("modified")) json.at("modified").get_to(out.modified);
+            if (json.contains("modifiedBy")) json.at("modifiedBy").get_to(out.modifiedBy);
         }
 
         void to_json(nlohmann::json& json, const ReviewSync& in)
@@ -714,6 +732,8 @@ namespace djv
                     m.id = getMeta(djv, "id");
                     m.author = getMeta(djv, "author");
                     m.created = getMeta(djv, "created");
+                    m.modified = getMeta(djv, "modified");
+                    m.modifiedBy = getMeta(djv, "modifiedBy");
                     if (m.text.empty())
                     {
                         m.text = getMeta(djv, "text");
@@ -798,6 +818,14 @@ namespace djv
                 if (!marker.created.empty())
                 {
                     djv["created"] = marker.created;
+                }
+                if (!marker.modified.empty())
+                {
+                    djv["modified"] = marker.modified;
+                }
+                if (!marker.modifiedBy.empty())
+                {
+                    djv["modifiedBy"] = marker.modifiedBy;
                 }
                 if (!marker.range.has_value())
                 {

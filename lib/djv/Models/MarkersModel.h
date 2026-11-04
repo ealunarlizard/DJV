@@ -40,12 +40,22 @@ namespace djv
             //! Observe the markers.
             DJV_MODELS_API std::shared_ptr<ftk::IObservableList<ReviewMarker> > observeMarkers() const;
 
+            //! Get the user the markers made and changed here are attributed
+            //! to.
+            DJV_MODELS_API const std::string& getUser() const;
+
+            //! Set the user the markers made and changed here are attributed
+            //! to: the user signed in to the sync server, or reviewAuthor()
+            //! when no one is. That is also the default, so a model on its
+            //! own still says who wrote a marker.
+            DJV_MODELS_API void setUser(const std::string&);
+
             //! Replace all the markers, e.g. when a review is opened.
             DJV_MODELS_API void setMarkers(const std::vector<ReviewMarker>&);
 
             //! Add a marker, returning its identifier. The identifier,
-            //! creation time and author are filled in here, so callers only
-            //! provide the rest.
+            //! creation time and author (the user, see setUser()) are filled
+            //! in here, so callers only provide the rest.
             DJV_MODELS_API std::string add(
                 const std::optional<OTIO_NS::TimeRange>&,
                 const std::string& name,
@@ -54,10 +64,12 @@ namespace djv
             //! Replace the text of the marker with the given identifier. The
             //! creation time and author stay: they say who raised the point
             //! and when, not who last touched the wording. The modification
-            //! time is set.
+            //! time is set, and the user is recorded as the one who made the
+            //! change.
             DJV_MODELS_API void update(const std::string& id, const std::string& text);
 
-            //! Replace the color of the marker with the given identifier.
+            //! Replace the color of the marker with the given identifier,
+            //! recording the change as update() does.
             DJV_MODELS_API void updateColor(const std::string& id, const ftk::Color4F&);
 
             //! Add the marker, or replace the one with the same identifier,

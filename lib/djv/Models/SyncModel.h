@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ namespace djv
 {
     namespace models
     {
+        class AnnotationsModel;
         class MarkersModel;
 
         //! The state of the connection to a sync server.
@@ -262,6 +264,23 @@ namespace djv
         //! comes from a server that other versions of DJV write to.
         DJV_MODELS_API void from_json(const nlohmann::json&, SyncMedia&);
 
+        //! \name Drawing Media
+        //! What a shared drawing says it is drawn on.
+        //!
+        //! A drawing names its source by ReviewFile::id, which each DJV makes
+        //! up when it opens the file, so it means nothing on another PC. On
+        //! the server a drawing names one of the session's videos instead,
+        //! by its path as the session keeps it -- the same text for every
+        //! client, since they all read it from the server. Each client finds
+        //! the file it has open for that path (see
+        //! SyncMerger::setDrawingSources()).
+        ///@{
+
+        DJV_MODELS_API std::string syncMediaKey(const SyncMedia&);
+        DJV_MODELS_API std::string syncMediaKey(const SyncMediaFile&);
+
+        ///@}
+
         //! A change to send to the server.
         struct DJV_MODELS_API_TYPE SyncOp
         {
@@ -269,14 +288,22 @@ namespace djv
             {
                 Put,
                 Delete,
-                PutMedia
+                PutMedia,
+                PutDrawing,
+                DeleteDrawing
             };
 
             Type           type = Type::Put;
 
-            //! The marker, for Put and Delete.
+            //! The marker or the drawing, for Put, Delete, PutDrawing and
+            //! DeleteDrawing.
             std::string    id;
             nlohmann::json marker;
+
+            //! The drawing as the server keeps it, for PutDrawing: the
+            //! annotation, with "media" (see syncMediaKey()) in place of
+            //! "sourceId".
+            nlohmann::json drawing;
 
             //! The media, for PutMedia.
             SyncMedia      media;
@@ -286,9 +313,9 @@ namespace djv
         //! sign in.
         DJV_MODELS_API std::string syncSignedOutMessage();
 
-        //! The merge between the markers and a sync session, without the
-        //! network: it is told what the server said and what the markers
-        //! now are, and says what to send.
+        //! The merge between the markers, and the drawings, and a sync
+        //! session, without the network: it is told what the server said and
+        //! what the markers and the drawings now are, and says what to send.
         //!
         //! The server decides the order of the changes: the one it receives
         //! last wins, and every client applies the changes in the order the
@@ -296,6 +323,15 @@ namespace djv
         //! change still on its way is skipped, since the local one arrives
         //! after it and will win everywhere. Deletions are kept by the server
         //! so that a client that was away learns of them.
+        //!
+        //! The server says who made each change, and fills in the author and
+        //! who changed a marker or a drawing last. When our own change comes
+        //! back with nothing newer of ours behind it, the server's version is
+        //! taken, so that this client shows the names the others see.
+        //!
+        //! Drawings go the same way as markers, one drawing (one person's on
+        //! one frame) at a time, but only those on the session's videos: see
+        //! setDrawingSources().
         class DJV_MODELS_API_TYPE SyncMerger : public std::enable_shared_from_this<SyncMerger>
         {
             FTK_NON_COPYABLE(SyncMerger);
@@ -303,6 +339,7 @@ namespace djv
         protected:
             void _init(
                 const std::shared_ptr<MarkersModel>&,
+                const std::shared_ptr<AnnotationsModel>&,
                 const std::string& clientId);
 
             SyncMerger();
@@ -310,9 +347,16 @@ namespace djv
         public:
             DJV_MODELS_API ~SyncMerger();
 
-            //! Create a new merger.
+            //! Create a new merger, for the markers only.
             DJV_MODELS_API static std::shared_ptr<SyncMerger> create(
                 const std::shared_ptr<MarkersModel>&,
+                const std::string& clientId);
+
+            //! Create a new merger, for the markers and the drawings. The
+            //! annotations model may be null.
+            DJV_MODELS_API static std::shared_ptr<SyncMerger> create(
+                const std::shared_ptr<MarkersModel>&,
+                const std::shared_ptr<AnnotationsModel>&,
                 const std::string& clientId);
 
             //! Get the client identifier the changes are sent with.
@@ -359,21 +403,46 @@ namespace djv
             //! media is open.
             DJV_MODELS_API std::optional<SyncOp> shareMedia() const;
 
+            //! Get the open files the session's drawings are on.
+            DJV_MODELS_API const std::map<std::string, std::string>& getDrawingSources() const;
+
+            //! Set the open files the session's drawings are on: for each
+            //! source (ReviewFile::id) that is one of the session's videos,
+            //! the video's key (see syncMediaKey()).
+            //!
+            //! Only the drawings on those sources are shared. The session's
+            //! drawings on a video that is not open here wait in the merger,
+            //! and are added to the drawings once the video is open; the
+            //! drawings made here on it before that are sent. Returns the
+            //! changes to send.
+            DJV_MODELS_API std::vector<SyncOp> setDrawingSources(const std::map<std::string, std::string>&);
+
+            //! Get whether the server shares drawings. A server from before
+            //! version 2.3 shares the markers only. False until the session
+            //! state has been received.
+            DJV_MODELS_API bool hasDrawings() const;
+
         private:
             std::vector<SyncOp> _diff();
+            std::vector<SyncOp> _diffMarkers();
+            std::vector<SyncOp> _diffDrawings();
+            void _snapshotDrawings(const nlohmann::json&);
+            void _eventDrawing(const nlohmann::json&, const std::string& type);
+            std::optional<ReviewAnnotation> _toWire(const ReviewAnnotation&) const;
+            std::optional<ReviewAnnotation> _toLocal(const ReviewAnnotation&) const;
 
             FTK_PRIVATE();
         };
 
-        //! Sync of the review markers with other people, through a sync
-        //! server (see server/README.md).
+        //! Sync of the review markers and drawings with other people,
+        //! through a sync server (see server/README.md).
         //!
         //! The network runs on two threads of its own: one reads the
         //! session state and then follows the server's event stream,
         //! reconnecting when the stream drops, and one sends the local
         //! changes in order, retrying until the server takes them. What
-        //! arrives is applied to the markers on the main thread, from a
-        //! timer.
+        //! arrives is applied to the markers and the drawings on the main
+        //! thread, from a timer.
         class DJV_MODELS_API_TYPE SyncModel : public std::enable_shared_from_this<SyncModel>
         {
             FTK_NON_COPYABLE(SyncModel);
@@ -381,17 +450,20 @@ namespace djv
         protected:
             void _init(
                 const std::shared_ptr<ftk::Context>&,
-                const std::shared_ptr<MarkersModel>&);
+                const std::shared_ptr<MarkersModel>&,
+                const std::shared_ptr<AnnotationsModel>&);
 
             SyncModel();
 
         public:
             DJV_MODELS_API ~SyncModel();
 
-            //! Create a new model.
+            //! Create a new model. Without an annotations model, only the
+            //! markers are shared.
             DJV_MODELS_API static std::shared_ptr<SyncModel> create(
                 const std::shared_ptr<ftk::Context>&,
-                const std::shared_ptr<MarkersModel>&);
+                const std::shared_ptr<MarkersModel>&,
+                const std::shared_ptr<AnnotationsModel>& = nullptr);
 
             //! Get the session, when connected or connecting.
             DJV_MODELS_API const std::optional<ReviewSync>& getSync() const;
@@ -424,8 +496,16 @@ namespace djv
             //! false when not connected or when no media is open.
             DJV_MODELS_API bool shareMedia();
 
+            //! Get the open files the session's drawings are on.
+            DJV_MODELS_API const std::map<std::string, std::string>& getDrawingSources() const;
+
+            //! Set the open files the session's drawings are on, kept across
+            //! connections (see SyncMerger::setDrawingSources()).
+            DJV_MODELS_API void setDrawingSources(const std::map<std::string, std::string>&);
+
         private:
             void _tick();
+            void _send(const std::vector<SyncOp>&);
             void _setStatus(const SyncStatus&);
 
             FTK_PRIVATE();

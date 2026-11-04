@@ -44,6 +44,8 @@ namespace djv
                 .def_rw("text", &ReviewMarker::text)
                 .def_rw("author", &ReviewMarker::author)
                 .def_rw("created", &ReviewMarker::created)
+                .def_rw("modified", &ReviewMarker::modified)
+                .def_rw("modifiedBy", &ReviewMarker::modifiedBy)
                 .def(nanobind::self == nanobind::self)
                 .def(nanobind::self != nanobind::self);
 
@@ -53,11 +55,13 @@ namespace djv
                 .def(nb::new_(&MarkersModel::create))
                 .def_prop_ro("markers", &MarkersModel::getMarkers, nb::rv_policy::copy)
                 .def_prop_ro("observeMarkers", &MarkersModel::observeMarkers)
+                .def_prop_rw("user", &MarkersModel::getUser, &MarkersModel::setUser)
                 .def("setMarkers", &MarkersModel::setMarkers, nb::arg("markers"))
                 .def("add", &MarkersModel::add,
                     nb::arg("range"), nb::arg("name"), nb::arg("text"))
                 .def("update", &MarkersModel::update, nb::arg("id"), nb::arg("text"))
                 .def("updateColor", &MarkersModel::updateColor, nb::arg("id"), nb::arg("color"))
+                .def("upsert", &MarkersModel::upsert, nb::arg("marker"))
                 .def("remove", &MarkersModel::remove, nb::arg("id"))
                 .def("clear", &MarkersModel::clear);
         }

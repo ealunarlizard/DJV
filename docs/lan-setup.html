@@ -83,14 +83,14 @@
 <ul>
 <li><strong>Users</strong>: the people who may sign in. To add one, give a user name (letters, digits, <code>.</code>, <code>_</code> and <code>-</code>), their name, and a password of at least 8 characters, then click <strong>Add user</strong>. Tell them the user name and password. You can rename a user in place. <strong>New password</strong> gives a user a new password and signs out their DJVs, which then ask for it. <strong>Remove</strong> signs the user out and stops them signing in. The table also shows when each user last signed in, from which PC, with which DJV version, and how many sessions they have open. A version other than the expected one is flagged.</li>
 <li><strong>Connected now</strong>: who is following which session, from which PC.</li>
-<li><strong>Sessions</strong>: every session, whoever it is for, with its date, description, videos and people, its number of markers and of changes, and who has it open.</li>
+<li><strong>Sessions</strong>: every session, whoever it is for, with its date, description, videos and people, its number of markers, of drawings and of changes, and who has it open.</li>
 <li><strong>Server settings</strong>: the name, the media share and its account, and the expected DJV version. They are saved to <code>config.json</code>. The page also says whether the share's password was loaded.</li>
 <li><strong>Database</strong>: <strong>Download a backup</strong> saves a copy of every session, which opens in any SQLite tool.</li>
 </ul>
 <h2 id="the-review-portal">The review portal</h2>
 <p>Open <code>http://192.168.0.100:8877</code> in a browser and sign in with your DJV user name and password. The portal has three tabs. Its full guide is <code>docs\portal.md</code> in the server's package.</p>
 <ul>
-<li><strong>Sessions</strong>: the sessions you are one of the people of, newest first, with their date, description, videos (A and B), people, and number of notes. People who have a session open in DJV now are shown in green. <strong>review</strong> opens the session in DJV on this PC. <strong>Copy link</strong> copies the link to send to someone. Whoever made a session, and the administrator, can <strong>Edit</strong> or <strong>Delete</strong> it.</li>
+<li><strong>Sessions</strong>: the sessions you are one of the people of, newest first, with their date, description, videos (A and B), people, and number of notes and of drawings. People who have a session open in DJV now are shown in green. <strong>review</strong> opens the session in DJV on this PC. <strong>Copy link</strong> copies the link to send to someone. Whoever made a session, and the administrator, can <strong>Edit</strong> or <strong>Delete</strong> it.</li>
 <li><strong>New session</strong>: a description, a date, the people to invite, and one video, or two to compare. The server names the session, so two sessions never clash. Only the people invited, whoever made it, and the administrator see it.</li>
 <li><strong>Videos</strong>: what the media share holds, and an upload by drag and drop into a folder of your choice. Large files go up in pieces, and carry on after a dropped connection; choosing the same file again after closing the page carries on where it stopped. A file never replaces another of the same name. Only the administrator can delete videos.</li>
 </ul>
@@ -129,7 +129,7 @@
 <li>Open the media from the mapped drive, for example <code>S:\shows\abc\sh010\sh010_v003.mov</code>.</li>
 <li>In the <strong>Review</strong> tool's <strong>Sync</strong> section, give a session name and click <strong>Connect</strong>. If the session has no media yet, the file you have open becomes its media.</li>
 <li>Everyone else connects to the same session. Those with nothing open get the session's media opened from their own drive, with the markers already written.</li>
-<li>Add notes as usual. Every addition, edit and deletion reaches the others within a moment.</li>
+<li>Add notes and draw as usual. Every addition, edit and deletion reaches the others within a moment, with the name of whoever made it.</li>
 </ol>
 <p>Save the review (<code>.djvr</code>) to come back to it: opening it joins the same session again, once DJV has signed in.</p>
 <p>Or start from the portal: upload the video, make a session of it for the people reviewing it, and each of them clicks <strong>review</strong>.</p>

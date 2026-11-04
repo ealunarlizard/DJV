@@ -30,6 +30,7 @@
 #include <ftk/Core/Timer.h>
 
 #include <algorithm>
+#include <optional>
 
 #include <cmath>
 #include <regex>
@@ -1353,7 +1354,16 @@ namespace djv
                 return w > 0 ? boxes[index].w() / static_cast<float>(w) : 1.F;
             };
 
-            // The strokes already committed on this frame.
+            // The strokes already committed on this frame, and where each
+            // person's drawing starts, for the name tags below.
+            struct Tag
+            {
+                std::string author;
+                ftk::Color4F color;
+                ftk::V2F pos;
+            };
+            std::vector<Tag> tags;
+            bool othersDrew = false;
             const auto& annotations = p.annotationsModel->getAnnotations();
             for (const auto& annotation : annotations)
             {
@@ -1375,9 +1385,60 @@ namespace djv
                     continue;
                 }
                 const float scale = sourceScale(index);
+                std::optional<ftk::V2F> topLeft;
                 for (const auto& stroke : annotation.strokes)
                 {
                     drawStroke(index, stroke, scale);
+                    for (const auto& point : stroke.points)
+                    {
+                        const ftk::V2F pos = _imageToWidget(index, point);
+                        topLeft = topLeft.has_value() ?
+                            ftk::V2F(std::min(topLeft->x, pos.x), std::min(topLeft->y, pos.y)) :
+                            pos;
+                    }
+                }
+                if (topLeft.has_value() && !annotation.author.empty())
+                {
+                    tags.push_back({
+                        annotation.author,
+                        annotation.strokes.front().color,
+                        ftk::V2F(topLeft->x + g.min.x, topLeft->y + g.min.y) });
+                    othersDrew = othersDrew || annotation.author != p.annotationsModel->getUser();
+                }
+            }
+
+            // Whose drawing is whose, once someone else has drawn on the
+            // frame: in a shared session several people draw on the same
+            // frame, and their strokes look alike. On your own the tags
+            // would only cover the picture. Each tag sits above the top left
+            // of the drawing, kept inside the viewport.
+            if (othersDrew)
+            {
+                const int margin = event.style->getSizeRole(ftk::SizeRole::MarginInside, event.displayScale);
+                const int stripe = event.style->getSizeRole(ftk::SizeRole::Border, event.displayScale) * 3;
+                const ftk::FontInfo font = event.style->getFont(ftk::FontType::Regular, event.displayScale);
+                const ftk::FontMetrics metrics = event.fontSystem->getMetrics(font);
+                const ftk::Color4F background = event.style->getColorRole(ftk::ColorRole::Overlay);
+                const ftk::Color4F textColor = event.style->getColorRole(ftk::ColorRole::Text);
+                for (const auto& tag : tags)
+                {
+                    const ftk::Size2I size = event.fontSystem->getSize(tag.author, font);
+                    const int w = size.w + margin * 2 + stripe;
+                    const int h = metrics.lineHeight + margin * 2;
+                    const int x = std::max(
+                        g.min.x,
+                        std::min(static_cast<int>(tag.pos.x), g.max.x - w));
+                    const int y = std::max(
+                        g.min.y,
+                        std::min(static_cast<int>(tag.pos.y) - h - margin, g.max.y - h));
+                    const ftk::Box2I box(x, y, w, h);
+                    event.render->drawRect(box, background);
+                    event.render->drawRect(ftk::Box2I(box.min.x, box.min.y, stripe, box.h()), tag.color);
+                    event.render->drawText(
+                        event.fontSystem->getGlyphs(tag.author, font),
+                        metrics,
+                        ftk::V2I(box.min.x + stripe + margin, box.min.y + margin),
+                        textColor);
                 }
             }
 
@@ -1484,7 +1545,15 @@ namespace djv
             {
                 const auto lines = wrapNote(note.marker->text, maxWidth, event.fontSystem, textFont);
                 int width = 0;
-                const std::string& author = note.marker->author;
+                // Who wrote it, and who changed it last when that was
+                // someone else: a shared session shows everyone's notes.
+                std::string author = note.marker->author;
+                if (!note.marker->modifiedBy.empty() && note.marker->modifiedBy != note.marker->author)
+                {
+                    author = author.empty() ?
+                        "edited by " + note.marker->modifiedBy :
+                        author + " (edited by " + note.marker->modifiedBy + ")";
+                }
                 if (!author.empty())
                 {
                     width = event.fontSystem->getSize(author, authorFont).w;

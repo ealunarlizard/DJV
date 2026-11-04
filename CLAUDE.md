@@ -136,8 +136,8 @@ tracks the registered tools and which ones are visible.
 
 ### Review sync
 
-The review markers (`MarkersModel`) can be shared live through
-`server/server.js`:
+The review markers (`MarkersModel`) and drawings (`AnnotationsModel`) can be
+shared live through `server/server.js`:
 
 - `models::SyncModel` runs two threads that use the vendored single-header
   `deps/cpp-httplib/httplib.h`, included only in `SyncModel.cpp`. One thread
@@ -150,7 +150,21 @@ The review markers (`MarkersModel`) can be shared live through
     difference.
   - The server's ordering decides conflicts: the last write it receives wins.
   - Remote changes to a marker that still has a local change in flight are
-    skipped.
+    skipped. Our own change coming back with none of ours behind it is
+    taken as the server wrote it.
+  - Drawings go the same way, in their own tables, endpoints and events
+    (`upsert-drawing`, `delete-drawing`). On the wire a drawing has
+    `media`, the session's path for the video (`syncMediaKey()`), in place
+    of `sourceId`, which is per PC; `App::_syncDrawingSourcesUpdate()`
+    tells the merger which open files are the session's videos
+    (`setDrawingSources()`), and drawings on other files stay local. A
+    frame holds one drawing per user, and undo only replays the drawings it
+    changed, so it never takes back a remote change.
+- The server writes `author` and `modifiedBy` (and the times) into every
+  marker and drawing from the signed-in user (`stamp()` in `server.js`);
+  a resend with the same content keeps them. `MarkersModel::setUser()` and
+  `AnnotationsModel::setUser()` are the signed-in user, or `reviewAuthor()`
+  (`App::_reviewUserUpdate()`).
 - The server keeps every session in one SQLite file (`node:sqlite`, Node
   22.13 or newer, still no npm dependencies). Each change is written in a
   transaction before it is answered, and the last 1000 events are kept so

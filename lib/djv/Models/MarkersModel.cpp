@@ -12,12 +12,14 @@ namespace djv
         struct MarkersModel::Private
         {
             std::shared_ptr<ftk::ObservableList<ReviewMarker> > markers;
+            std::string user;
         };
 
         void MarkersModel::_init()
         {
             FTK_P();
             p.markers = ftk::ObservableList<ReviewMarker>::create();
+            p.user = reviewAuthor();
         }
 
         MarkersModel::MarkersModel() :
@@ -44,6 +46,16 @@ namespace djv
             return _p->markers;
         }
 
+        const std::string& MarkersModel::getUser() const
+        {
+            return _p->user;
+        }
+
+        void MarkersModel::setUser(const std::string& value)
+        {
+            _p->user = value;
+        }
+
         void MarkersModel::setMarkers(const std::vector<ReviewMarker>& value)
         {
             _set(value);
@@ -61,7 +73,7 @@ namespace djv
             marker.range = range;
             marker.text = text;
             marker.created = timestamp();
-            marker.author = reviewAuthor();
+            marker.author = p.user;
             auto markers = p.markers->get();
             markers.push_back(marker);
             _set(markers);
@@ -80,6 +92,7 @@ namespace djv
             {
                 i->text = text;
                 i->modified = timestamp();
+                i->modifiedBy = p.user;
                 p.markers->setIfChanged(markers);
             }
         }
@@ -96,6 +109,7 @@ namespace djv
             {
                 i->color = color;
                 i->modified = timestamp();
+                i->modifiedBy = p.user;
                 p.markers->setIfChanged(markers);
             }
         }

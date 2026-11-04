@@ -26,6 +26,8 @@ namespace djv
             void _clearFrame();
             void _undo();
             void _serialize();
+            void _users();
+            void _remote();
         };
     }
 }

@@ -80,6 +80,9 @@ namespace djv
             //! in/out points to itself on the way.
             void _goToRange(const OTIO_NS::TimeRange&);
             void _markersUpdate();
+            //! Rebuild the list of drawings: every person's drawing on the
+            //! files shown, with who drew it and who changed it last.
+            void _drawingsUpdate();
             void _selectionUpdate();
             void _inOutUpdate();
 

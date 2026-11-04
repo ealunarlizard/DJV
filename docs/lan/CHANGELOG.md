@@ -11,11 +11,24 @@ root `ChangeLog.md`, under the DJV version.
 
 ## [lan-0.3.0] - Unreleased
 
-Built on DJV 3.7.5-dev, with sync server 2.2.0 (`server/package.json`).
+Built on DJV 3.7.5-dev, with sync server 2.3.0 (`server/package.json`).
 Branch `feature/lan-server`. A DJV of lan-0.2.0 still syncs notes with this
-server; the review links and two-video sessions need this DJV.
+server; the review links, two-video sessions and shared drawings need this
+DJV.
 
 ### Added
+
+- Shared drawings: the drawings on a session's videos are synced like the
+  markers, one person's drawing on one frame at a time
+  (`/api/sessions/<s>/drawings/<id>`, the `upsert-drawing` and
+  `delete-drawing` events, `drawings` and `deletedDrawings` in the session
+  state). A drawing names its video by the session's path for it, and each
+  DJV draws it on the file it has open for that path. The portal and the
+  admin page count the drawings. (CR-027)
+- Who made each marker and drawing, and who changed it last: the server
+  writes `author` and `modifiedBy` itself, from the user signed in. DJV
+  shows both in the Review tool's lists, over the video, and as name tags on
+  the drawings of a frame someone else drew on. (CR-027)
 
 - `.env` and `.env.example`: a studio's own values are kept out of the
   code. `DJV_SYNC_SERVER` is DJV's default sync server, read by CMake; the
@@ -78,7 +91,12 @@ server; the review links and two-video sessions need this DJV.
 - `GET /api/sessions` lists the user's sessions, newest first, with their
   date, description, people, videos and who is connected. (CR-019)
 - The database layout is version 3: `session_info` and `uploads`. (CR-018,
-  CR-019)
+  CR-019) Version 4 adds `drawings` and `deleted_drawings`. (CR-027)
+- A frame holds one drawing per person, and undoing a drawing takes back
+  only the drawings the user changed, not a remote change made since.
+  (CR-027)
+- A request may be 4 MB, up from 1 MB: a drawing is sent whole with each
+  stroke. (CR-027)
 - A deleted session, or one a user was taken out of, ends its streams with
   a `removed` event; DJV stops sending to it. (CR-019)
 

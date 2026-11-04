@@ -46,6 +46,86 @@ namespace djv
             _clearFrame();
             _undo();
             _serialize();
+            _users();
+            _remote();
+        }
+
+        void AnnotationsModelTest::_users()
+        {
+            auto model = models::AnnotationsModel::create();
+            // Attributed to the person logged in until told otherwise.
+            FTK_CHECK(models::reviewAuthor() == model->getUser());
+
+            // Each person draws into a drawing of their own on the frame,
+            // and the frame shows them all.
+            model->setUser("anna");
+            model->addStroke("srcA", frame(100), makeStroke(0.F, 0.F, 10.F, 10.F));
+            model->addStroke("srcA", frame(100), makeStroke(0.F, 50.F, 10.F, 50.F));
+            model->setUser("bob");
+            model->addStroke("srcA", frame(100), makeStroke(100.F, 100.F, 110.F, 110.F));
+            const auto& annotations = model->getAnnotations();
+            FTK_CHECK(2 == annotations.size());
+            FTK_CHECK("anna" == annotations[0].author);
+            FTK_CHECK(2 == annotations[0].strokes.size());
+            // Anna's second stroke is a change to her drawing, by her.
+            FTK_CHECK("anna" == annotations[0].modifiedBy);
+            FTK_CHECK(!annotations[0].modified.empty());
+            FTK_CHECK("bob" == annotations[1].author);
+            FTK_CHECK(annotations[1].modifiedBy.empty());
+            FTK_CHECK(3 == model->getStrokes("srcA", frame(100)).size());
+
+            // Bob's eraser reaches Anna's drawing, and says so.
+            model->eraseStrokes("srcA", frame(100), ftk::V2F(5.F, 5.F), 2.F);
+            FTK_CHECK(2 == model->getAnnotations().size());
+            FTK_CHECK(1 == model->getAnnotations()[0].strokes.size());
+            FTK_CHECK("anna" == model->getAnnotations()[0].author);
+            FTK_CHECK("bob" == model->getAnnotations()[0].modifiedBy);
+
+            // A drawing removed as a whole comes back with undo.
+            const std::string id = model->getAnnotations()[1].id;
+            model->removeAnnotation(id);
+            FTK_CHECK(1 == model->getAnnotations().size());
+            model->undo();
+            FTK_CHECK(2 == model->getAnnotations().size());
+            FTK_CHECK(id == model->getAnnotations()[1].id);
+            _print("  one drawing per person on a frame -> ok");
+        }
+
+        void AnnotationsModelTest::_remote()
+        {
+            auto model = models::AnnotationsModel::create();
+            model->setUser("anna");
+            model->addStroke("srcA", frame(10), makeStroke(0.F, 0.F, 10.F, 10.F));
+
+            // A drawing from somewhere else is taken as it is, and is not an
+            // undo step.
+            models::ReviewAnnotation theirs;
+            theirs.id = "theirs";
+            theirs.sourceId = "srcA";
+            theirs.time = frame(10);
+            theirs.author = "bob";
+            theirs.strokes.push_back(makeStroke(50.F, 50.F, 60.F, 60.F));
+            model->upsert(theirs);
+            FTK_CHECK(2 == model->getAnnotations().size());
+            FTK_CHECK(model->getAnnotations()[1] == theirs);
+
+            // Undoing Anna's stroke takes back her drawing only: Bob's,
+            // which arrived after it, stays.
+            model->undo();
+            FTK_CHECK(1 == model->getAnnotations().size());
+            FTK_CHECK("theirs" == model->getAnnotations()[0].id);
+            model->redo();
+            FTK_CHECK(2 == model->getAnnotations().size());
+            FTK_CHECK("anna" == model->getAnnotations()[0].author);
+
+            // A remote change to Bob's drawing, then its removal.
+            theirs.strokes.push_back(makeStroke(70.F, 70.F, 80.F, 80.F));
+            model->upsert(theirs);
+            FTK_CHECK(2 == model->getAnnotations()[1].strokes.size());
+            model->remove("theirs");
+            FTK_CHECK(1 == model->getAnnotations().size());
+            FTK_CHECK(model->observeHasUndo()->get());
+            _print("  remote drawings, kept out of the undo history -> ok");
         }
 
         void AnnotationsModelTest::_strokes()
@@ -177,6 +257,10 @@ namespace djv
             annotation.id = "abc123";
             annotation.sourceId = "src456";
             annotation.time = frame(218);
+            annotation.author = "anna";
+            annotation.created = "2026-07-26T18:05:00Z";
+            annotation.modified = "2026-07-27T09:00:00Z";
+            annotation.modifiedBy = "bob";
             annotation.strokes.push_back(makeStroke(812.5F, 430.F, 815.F, 433.5F));
 
             const nlohmann::json json = annotation;

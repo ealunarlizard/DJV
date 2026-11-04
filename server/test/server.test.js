@@ -91,7 +91,9 @@ test('a session nobody has written to is empty', async () => {
   const s = await start();
   try {
     const res = await fetch(`${s.base}/api/sessions/new-one`);
-    assert.deepEqual(await res.json(), { session: 'new-one', rev: 0, media: null, markers: [], deleted: [] });
+    assert.deepEqual(await res.json(), {
+      session: 'new-one', rev: 0, media: null, markers: [], deleted: [], drawings: [], deletedDrawings: [],
+    });
   } finally {
     await s.stop();
   }

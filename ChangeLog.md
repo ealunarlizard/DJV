@@ -34,6 +34,17 @@ Changes:
 * The sync server offers DJV itself for download at /app, with no sign-in.
   Its Docker image carries the DJV installer, so updating the server brings
   the studio the new DJV.
+* Drawings are shared through the sync server too: the drawings on a
+  session's videos reach everyone in the session as they are drawn. Each
+  person has a drawing of their own on a frame, so two people drawing on one
+  frame keep what each drew, and a tag names whose drawing is whose once
+  someone else has drawn on the frame. The Review tool lists the drawings,
+  with who drew them and who changed them last.
+* Markers and drawings say who made them and who changed them last, in the
+  Review tool and over the video. Signed in to the sync server, that is the
+  user name you signed in with, and the server writes the names in itself.
+* Undoing a drawing takes back your own change only, not a change someone
+  else made in the meantime.
 * Review/Open, Review/Save and Review/AddNote take arguments for
   automation.
 * Export now has options for specifying the width or a custom size.

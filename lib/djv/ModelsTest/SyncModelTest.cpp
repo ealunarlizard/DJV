@@ -5,6 +5,7 @@
 
 #include <djv/ModelsTest/ModelsTestUtil.h>
 
+#include <djv/Models/AnnotationsModel.h>
 #include <djv/Models/Credentials.h>
 #include <djv/Models/DeepLink.h>
 #include <djv/Models/LanModel.h>
@@ -106,6 +107,8 @@ namespace djv
             _media();
             _lan();
             _merge();
+            _attribution();
+            _drawings();
             _connect();
             _deepLink();
             _live();
@@ -686,6 +689,198 @@ namespace djv
             _print("  merge -> ok");
         }
 
+        void SyncModelTest::_attribution()
+        {
+            auto model = models::MarkersModel::create();
+            model->setUser("anna");
+            auto merger = models::SyncMerger::create(model, "me");
+            nlohmann::json snapshot;
+            snapshot["rev"] = 1;
+            snapshot["markers"] = nlohmann::json::array();
+            snapshot["deleted"] = nlohmann::json::array();
+            merger->snapshot(snapshot);
+
+            // The server writes in who made the marker, whatever this client
+            // said. Our change coming back, with nothing newer of ours behind
+            // it, brings the server's version in, so the names here are the
+            // ones the others see.
+            const std::string id = model->add(std::nullopt, std::string(), "Mine.");
+            auto ops = merger->localChanged();
+            FTK_CHECK(1 == ops.size());
+            FTK_CHECK("anna" == ops[0].marker["author"]);
+            models::ReviewMarker stamped = *findMarker(model, id);
+            stamped.author = "anna.k";
+            FTK_CHECK(merger->event(upsertEvent(2, "me", stamped)));
+            FTK_CHECK("anna.k" == findMarker(model, id)->author);
+            // Taking it is not a change to send back.
+            FTK_CHECK(merger->localChanged().empty());
+
+            // With a later change of ours still on its way, the server's
+            // version of the earlier one is not taken: it would undo ours.
+            model->update(id, "Mine, first edit.");
+            FTK_CHECK(1 == merger->localChanged().size());
+            model->update(id, "Mine, second edit.");
+            FTK_CHECK(1 == merger->localChanged().size());
+            models::ReviewMarker first = *findMarker(model, id);
+            first.text = "Mine, first edit.";
+            first.modifiedBy = "anna.k";
+            FTK_CHECK(merger->event(upsertEvent(3, "me", first)));
+            FTK_CHECK("Mine, second edit." == findMarker(model, id)->text);
+            models::ReviewMarker second = *findMarker(model, id);
+            second.modifiedBy = "anna.k";
+            FTK_CHECK(merger->event(upsertEvent(4, "me", second)));
+            FTK_CHECK("Mine, second edit." == findMarker(model, id)->text);
+            FTK_CHECK("anna.k" == findMarker(model, id)->modifiedBy);
+            FTK_CHECK(merger->localChanged().empty());
+
+            // Someone else's edit says who made it.
+            models::ReviewMarker theirs = *findMarker(model, id);
+            theirs.text = "Reworded.";
+            theirs.modifiedBy = "bob";
+            FTK_CHECK(merger->event(upsertEvent(5, "them", theirs)));
+            FTK_CHECK("bob" == findMarker(model, id)->modifiedBy);
+            FTK_CHECK("anna.k" == findMarker(model, id)->author);
+            _print("  attribution -> ok");
+        }
+
+        void SyncModelTest::_drawings()
+        {
+            auto markers = models::MarkersModel::create();
+            auto annotations = models::AnnotationsModel::create();
+            annotations->setUser("anna");
+            auto merger = models::SyncMerger::create(markers, annotations, "me");
+            const OTIO_NS::RationalTime frame(12.0, 24.0);
+            auto stroke = [](float x)
+            {
+                models::ReviewStroke out;
+                out.points = { ftk::V2F(x, 0.F), ftk::V2F(x, 10.F) };
+                return out;
+            };
+            auto findDrawing = [&annotations](const std::string& id) -> const models::ReviewAnnotation*
+            {
+                const auto& value = annotations->getAnnotations();
+                const auto i = std::find_if(
+                    value.begin(),
+                    value.end(),
+                    [&id](const models::ReviewAnnotation& a) { return a.id == id; });
+                return i != value.end() ? &*i : nullptr;
+            };
+
+            // A server from before drawings were shared says nothing of them:
+            // the drawings stay here, and nothing about them is sent.
+            annotations->addStroke("localA", frame, stroke(1.F));
+            merger->setDrawingSources({ { "localA", "shows/a.mov" } });
+            nlohmann::json snapshot;
+            snapshot["rev"] = 1;
+            snapshot["markers"] = nlohmann::json::array();
+            snapshot["deleted"] = nlohmann::json::array();
+            FTK_CHECK(merger->snapshot(snapshot).empty());
+            FTK_CHECK(!merger->hasDrawings());
+            annotations->addStroke("localA", frame, stroke(2.F));
+            FTK_CHECK(merger->localChanged().empty());
+
+            // A server that shares them. The drawing on the session's video
+            // that this client has is sent, by the session's key for the
+            // video rather than by a source that means nothing elsewhere.
+            // The session's drawing on its second video, not open here,
+            // waits.
+            models::ReviewAnnotation theirs;
+            theirs.id = "theirs";
+            theirs.sourceId = "shows/b.mov";
+            theirs.time = frame;
+            theirs.author = "bob";
+            theirs.strokes = { stroke(5.F) };
+            nlohmann::json theirsJson = theirs;
+            theirsJson.erase("sourceId");
+            theirsJson["media"] = "shows/b.mov";
+            merger = models::SyncMerger::create(markers, annotations, "me");
+            merger->setDrawingSources({ { "localA", "shows/a.mov" } });
+            snapshot["drawings"] = nlohmann::json::array({ theirsJson });
+            snapshot["deletedDrawings"] = nlohmann::json::array();
+            auto ops = merger->snapshot(snapshot);
+            FTK_CHECK(merger->hasDrawings());
+            FTK_CHECK(1 == ops.size());
+            FTK_CHECK(models::SyncOp::Type::PutDrawing == ops[0].type);
+            const std::string mine = annotations->getAnnotations()[0].id;
+            FTK_CHECK(mine == ops[0].id);
+            FTK_CHECK("shows/a.mov" == ops[0].drawing["media"]);
+            FTK_CHECK(!ops[0].drawing.contains("sourceId"));
+            FTK_CHECK("anna" == ops[0].drawing["author"]);
+            FTK_CHECK(2 == ops[0].drawing["strokes"].size());
+            FTK_CHECK(!findDrawing("theirs"));
+
+            // The second video opened here: the drawing on it joins the
+            // drawings, on the source it has here.
+            ops = merger->setDrawingSources({ { "localA", "shows/a.mov" }, { "localB", "shows/b.mov" } });
+            FTK_CHECK(ops.empty());
+            FTK_CHECK(findDrawing("theirs"));
+            FTK_CHECK("localB" == findDrawing("theirs")->sourceId);
+            FTK_CHECK("bob" == findDrawing("theirs")->author);
+            FTK_CHECK(3 == annotations->getStrokes("localA", frame).size() + annotations->getStrokes("localB", frame).size());
+
+            // Our drawing coming back, as the server wrote it, is taken.
+            nlohmann::json event;
+            event["type"] = "upsert-drawing";
+            event["rev"] = 2;
+            event["clientId"] = "me";
+            nlohmann::json echo = nlohmann::json(*findDrawing(mine));
+            echo.erase("sourceId");
+            echo["media"] = "shows/a.mov";
+            echo["author"] = "anna.k";
+            event["drawing"] = echo;
+            FTK_CHECK(merger->event(event));
+            FTK_CHECK("anna.k" == findDrawing(mine)->author);
+            FTK_CHECK("localA" == findDrawing(mine)->sourceId);
+            FTK_CHECK(merger->localChanged().empty());
+
+            // Someone else's eraser changes our drawing, and says so.
+            echo["strokes"] = nlohmann::json::array({ echo["strokes"][0] });
+            echo["modifiedBy"] = "bob";
+            event["rev"] = 3;
+            event["clientId"] = "them";
+            event["drawing"] = echo;
+            FTK_CHECK(merger->event(event));
+            FTK_CHECK(1 == findDrawing(mine)->strokes.size());
+            FTK_CHECK("bob" == findDrawing(mine)->modifiedBy);
+            FTK_CHECK(merger->localChanged().empty());
+
+            // Deleting a drawing here is sent; a deletion from elsewhere
+            // applies.
+            annotations->removeAnnotation(mine);
+            ops = merger->localChanged();
+            FTK_CHECK(1 == ops.size());
+            FTK_CHECK(models::SyncOp::Type::DeleteDrawing == ops[0].type);
+            FTK_CHECK(mine == ops[0].id);
+            nlohmann::json deletion;
+            deletion["type"] = "delete-drawing";
+            deletion["rev"] = 4;
+            deletion["clientId"] = "them";
+            deletion["id"] = "theirs";
+            FTK_CHECK(merger->event(deletion));
+            FTK_CHECK(!findDrawing("theirs"));
+            FTK_CHECK(merger->localChanged().empty());
+
+            // A video closed here: its drawings stay in the session, and are
+            // not deleted for being out of sight, even once they are gone
+            // from here too.
+            annotations->setUser("anna.k");
+            annotations->addStroke("localB", frame, stroke(9.F));
+            ops = merger->localChanged();
+            FTK_CHECK(1 == ops.size());
+            FTK_CHECK("shows/b.mov" == ops[0].drawing["media"]);
+            const std::string onB = ops[0].id;
+            ops = merger->setDrawingSources({ { "localA", "shows/a.mov" } });
+            FTK_CHECK(ops.empty());
+            annotations->remove(onB);
+            FTK_CHECK(merger->localChanged().empty());
+
+            // A drawing on a file that is not one of the session's videos
+            // stays here.
+            annotations->addStroke("elsewhere", frame, stroke(3.F));
+            FTK_CHECK(merger->localChanged().empty());
+            _print("  drawings -> ok");
+        }
+
         void SyncModelTest::_connect()
         {
             auto model = models::MarkersModel::create();
@@ -887,9 +1082,9 @@ namespace djv
                 _print("  live: the server gives no identity (older than 2.1.1)");
             }
             std::string token;
+            std::string user;
             if (info.authRequired)
             {
-                std::string user;
                 std::string password;
                 ftk::getEnv("DJV_SYNC_TEST_USER", user);
                 ftk::getEnv("DJV_SYNC_TEST_PASSWORD", password);
@@ -946,26 +1141,39 @@ namespace djv
 
             // The first to join brings a marker into the empty session.
             auto modelA = models::MarkersModel::create();
+            auto annotationsA = models::AnnotationsModel::create();
             modelA->upsert(makeMarker("before", "Made before joining."));
-            auto syncA = models::SyncModel::create(_context, modelA);
+            auto syncA = models::SyncModel::create(_context, modelA, annotationsA);
             syncA->connect(models::ReviewSync{ server, session }, token, identity);
             FTK_CHECK(waitFor([&] { return connected(syncA); }));
 
             // The second gets it when joining.
             auto modelB = models::MarkersModel::create();
-            auto syncB = models::SyncModel::create(_context, modelB);
+            auto annotationsB = models::AnnotationsModel::create();
+            auto syncB = models::SyncModel::create(_context, modelB, annotationsB);
             syncB->connect(models::ReviewSync{ server, session }, token, identity);
             FTK_CHECK(waitFor([&] { return connected(syncB) && findMarker(modelB, "before"); }));
 
             // Changes go both ways, live: an addition, an edit, a removal.
+            // The marker each one ends with is the server's, names and all.
             const std::string id = modelA->add(
                 OTIO_NS::TimeRange(
                     OTIO_NS::RationalTime(12.0, 24.0),
                     OTIO_NS::RationalTime(1.0, 24.0)),
                 std::string(),
                 "From A.");
-            FTK_CHECK(waitFor([&] { return findMarker(modelB, id); }));
-            FTK_CHECK(*findMarker(modelB, id) == *findMarker(modelA, id));
+            FTK_CHECK(waitFor([&]
+                {
+                    const auto a = findMarker(modelA, id);
+                    const auto b = findMarker(modelB, id);
+                    return a && b && *a == *b;
+                }));
+            if (!user.empty())
+            {
+                // The server put it down to the user signed in, whatever
+                // this PC calls its user.
+                FTK_CHECK(user == findMarker(modelA, id)->author);
+            }
 
             modelB->update(id, "Edited by B.");
             FTK_CHECK(waitFor([&]
@@ -973,6 +1181,11 @@ namespace djv
                     const auto marker = findMarker(modelA, id);
                     return marker && "Edited by B." == marker->text;
                 }));
+            FTK_CHECK(!findMarker(modelA, id)->modified.empty());
+            if (!user.empty())
+            {
+                FTK_CHECK(user == findMarker(modelA, id)->modifiedBy);
+            }
 
             modelA->remove("before");
             FTK_CHECK(waitFor([&] { return !findMarker(modelB, "before"); }));
@@ -981,13 +1194,12 @@ namespace djv
             // last, both end with it.
             modelA->update(id, "A at the same time.");
             modelB->update(id, "B at the same time.");
-            FTK_CHECK(waitFor([&]
-                {
-                    const auto a = findMarker(modelA, id);
-                    const auto b = findMarker(modelB, id);
-                    return a && b && a->text == b->text;
-                }));
-            FTK_CHECK(modelA->getMarkers() == modelB->getMarkers());
+            // The same text is not yet the end: the one whose change the
+            // server took last has its own text already, and takes the
+            // server's version of it -- who changed it, and when -- once
+            // the change comes back.
+            FTK_CHECK(waitFor([&] { return modelA->getMarkers() == modelB->getMarkers(); }));
+            FTK_CHECK(findMarker(modelA, id)->text == findMarker(modelB, id)->text);
 
             // The media one shares reaches the other.
             models::SyncMedia media;
@@ -1004,6 +1216,41 @@ namespace djv
             syncA->setLocalMedia(media);
             FTK_CHECK(syncA->shareMedia());
             FTK_CHECK(waitFor([&] { return syncB->observeMedia()->get() == media; }));
+
+            // A drawing on the session's video goes to the other, onto the
+            // file that is that video there, whatever each calls it.
+            const std::string key = models::syncMediaKey(media);
+            syncA->setDrawingSources({ { "fileOnA", key } });
+            syncB->setDrawingSources({ { "fileOnB", key } });
+            const OTIO_NS::RationalTime frame(12.0, 24.0);
+            models::ReviewStroke stroke;
+            stroke.points = { ftk::V2F(10.F, 10.F), ftk::V2F(20.F, 20.F) };
+            annotationsA->addStroke("fileOnA", frame, stroke);
+            FTK_CHECK(waitFor([&] { return 1 == annotationsB->getStrokes("fileOnB", frame).size(); }));
+            FTK_CHECK(waitFor([&] { return annotationsA->getAnnotations()[0].author == annotationsB->getAnnotations()[0].author; }));
+            if (!user.empty())
+            {
+                FTK_CHECK(user == annotationsB->getAnnotations()[0].author);
+            }
+
+            // The other's eraser reaches it, and both see who changed it.
+            annotationsB->eraseStrokes("fileOnB", frame, ftk::V2F(15.F, 15.F), 2.F);
+            FTK_CHECK(waitFor([&] { return annotationsA->getAnnotations().empty(); }));
+            stroke.points = { ftk::V2F(50.F, 50.F), ftk::V2F(60.F, 60.F) };
+            annotationsB->setUser("someone-else");
+            annotationsB->addStroke("fileOnB", frame, stroke);
+            FTK_CHECK(waitFor([&] { return 1 == annotationsA->getAnnotations().size(); }));
+            if (!user.empty())
+            {
+                // The name this PC gave is not the one that stands: both end
+                // with the user signed in.
+                FTK_CHECK(waitFor([&]
+                    {
+                        return
+                            user == annotationsA->getAnnotations()[0].author &&
+                            user == annotationsB->getAnnotations()[0].author;
+                    }));
+            }
 
             syncA->disconnect();
             syncB->disconnect();

@@ -118,7 +118,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: v
     <p class="hint"><b>review</b> opens the session in DJV on this PC, signed in, with its videos. DJV must have been installed, or started once, on this PC, and set to this server.</p>
     <div class="actions" style="margin: 0 0 12px"><input type="search" class="filter" id="session-filter" placeholder="Filter by description, video or person"></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Date</th><th>Description</th><th>Videos</th><th>People</th><th>Notes</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Description</th><th>Videos</th><th>People</th><th>Notes</th><th>Drawings</th><th></th></tr></thead>
       <tbody id="sessions"></tbody>
     </table></div>
   </section>
@@ -278,12 +278,13 @@ function renderSessions() {
       <td>${videos}</td>
       <td>${members}</td>
       <td class="num">${s.markers}</td>
+      <td class="num">${s.drawings ?? 0}</td>
       <td class="buttons">
         <a class="button review" href="${esc(reviewLink(s.session))}" title="Open in DJV">review</a>
         <button data-copy="${esc(s.session)}" title="Copy the review link, to send to someone">Copy link</button>
         ${s.canEdit ? `<button data-edit="${esc(s.session)}">Edit</button> <button class="danger" data-remove="${esc(s.session)}">Delete</button>` : ''}
       </td></tr>`;
-  }).join('') : `<tr><td class="empty" colspan="6">${sessions.length ? 'No session matches.' : 'No sessions yet. Make one under New session.'}</td></tr>`;
+  }).join('') : `<tr><td class="empty" colspan="7">${sessions.length ? 'No session matches.' : 'No sessions yet. Make one under New session.'}</td></tr>`;
 }
 
 async function loadSessions() {

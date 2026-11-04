@@ -102,7 +102,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
       <h2>Sessions</h2>
       <p class="hint">Every session, whoever it is for. They are made, changed and deleted on the <a href="/">portal</a>, where you see them all too.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Session</th><th>Date</th><th>Videos</th><th>People</th><th>Markers</th><th>Changes</th><th>Following</th></tr></thead>
+        <thead><tr><th>Session</th><th>Date</th><th>Videos</th><th>People</th><th>Markers</th><th>Drawings</th><th>Changes</th><th>Following</th></tr></thead>
         <tbody id="sessions"></tbody>
       </table></div>
     </section>
@@ -210,8 +210,8 @@ async function refresh() {
       <td>${esc(s.date)}</td>
       <td>${s.videos.map((v) => esc(v.name)).join('<br>')}</td>
       <td>${s.members === null ? '<span class="hint">everyone</span>' : s.members.map((u) => u === s.createdBy ? `<b>${esc(u)}</b>` : esc(u)).join(', ')}</td>
-      <td>${s.markers}</td><td>${s.rev}</td><td>${s.connected.join(', ')}</td></tr>`,
-    'No sessions yet.', 7);
+      <td>${s.markers}</td><td>${s.drawings ?? 0}</td><td>${s.rev}</td><td>${s.connected.join(', ')}</td></tr>`,
+    'No sessions yet.', 8);
 }
 
 async function loadConfig() {

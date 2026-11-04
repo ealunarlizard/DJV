@@ -439,12 +439,12 @@ namespace djv
             p.commandsModel = models::CommandsModel::create(_context);
 
             p.markersModel = models::MarkersModel::create();
-            p.syncModel = models::SyncModel::create(_context, p.markersModel);
+            p.annotationsModel = models::AnnotationsModel::create();
+            p.syncModel = models::SyncModel::create(_context, p.markersModel, p.annotationsModel);
             p.lanModel = models::LanModel::create(
                 _context,
                 p.settingsModel,
                 p.appInfoModel->getVersion());
-            p.annotationsModel = models::AnnotationsModel::create();
             p.drawModel = models::DrawModel::create(getSettings());
             p.reviewMarkers = ftk::ObservableList<int>::create();
             p.syncProposal = ftk::Observable<models::ReviewSync>::create();
@@ -551,6 +551,9 @@ namespace djv
                 [this](const std::vector<std::shared_ptr<models::FilesModelItem> >& value)
                 {
                     _filesUpdate(value);
+                    // A file opened or closed may be one of the session's
+                    // videos, whose drawings are shared.
+                    _syncDrawingSourcesUpdate();
                 });
             p.reloadObserver = ftk::Observer<std::shared_ptr<models::FilesModelItem> >::create(
                 p.filesModel->observeReload(),
@@ -595,6 +598,7 @@ namespace djv
                     }
                     p.syncMediaRoot = value;
                     _syncLocalMediaUpdate();
+                    _syncDrawingSourcesUpdate();
                     // A drive just mapped, or a new media folder, may be
                     // where the file that could not be found is.
                     p.syncAutoLoaded.reset();
@@ -608,6 +612,10 @@ namespace djv
                 [this](const models::LanAuth& value)
                 {
                     FTK_P();
+                    // Before connecting again: what is sent from then on is
+                    // the new user's.
+                    _reviewUserUpdate();
+                    _syncLocalMediaUpdate();
                     const auto sync = p.syncModel->getSync();
                     if (models::LanAuthState::SignedIn == value.state &&
                         value.token != p.syncToken &&
@@ -706,6 +714,7 @@ namespace djv
                 [this](const std::optional<models::SyncMedia>& value)
                 {
                     _syncMediaUpdate(value);
+                    _syncDrawingSourcesUpdate();
                 });
             p.markersModifiedObserver = ftk::ListObserver<models::ReviewMarker>::create(
                 p.markersModel->observeMarkers(),

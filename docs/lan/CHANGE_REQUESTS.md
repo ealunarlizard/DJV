@@ -1016,3 +1016,71 @@ update, so that a new DJV reaches the studio when the server is updated.
 and serves it whole. `build-package.ps1` parses and finds that zip from
 `Version.h`. Still to check: an image build with and without `-NoDjv`, and
 `/app` on the dev server.
+
+## CR-027: Shared drawings, and who made each marker and drawing
+
+| | |
+|---|---|
+| **Status** | Implemented (dev server check pending) |
+| **Requested** | 2026-10-15 |
+| **Implemented** | 2026-10-15, `feature/lan-server` (server 2.3.0) |
+
+**Description.** The drawings are shared through the sync server as the
+markers are, not only the markers. Every marker and every drawing shows the
+user who made it and the user who changed it last, so that the changes of a
+shared review can be followed. The drawings of different people are kept
+apart, each as an item of its own that stores the drawing, the way a marker
+does.
+
+**Acceptance criteria.**
+1. A drawing made on one of a session's videos reaches everyone in the
+   session within a moment, on the file that is that video on their PC;
+   erasing and deleting it reach them too.
+2. Two people drawing on the same frame each keep what they drew.
+3. Drawings on a file that is not one of the session's videos stay on the
+   PC. A session's drawings on a video not open there wait, and show once
+   it is opened.
+4. Every marker and drawing says who made it and who changed it last: in
+   the Review tool's lists, over the video for a marker, and as a name tag
+   on a drawing once someone else has drawn on its frame.
+5. The names are the server's: the user signed in, whatever a client
+   sends, and the same on every PC in the session.
+6. Undoing a drawing takes back only the user's own change.
+7. A DJV of lan-0.2.0 still syncs its markers with the new server, and a
+   new DJV still syncs markers with a server before 2.3.0, keeping the
+   drawings to itself and saying so once.
+
+**Implementation.**
+- **Review format**: `modifiedBy` on markers, `modified` and `modifiedBy`
+  on annotations (`Review.h`), also in the OTIO marker metadata.
+- **`MarkersModel` / `AnnotationsModel`**: `setUser()`, the user things are
+  put down to; App sets it to the signed-in user, or `reviewAuthor()`. The
+  annotations are one per person per frame. Undo records only the drawings
+  that changed (`ChangeCommand`), and `upsert()` / `remove()` take remote
+  changes outside the history. `removeAnnotation()` is an undo step.
+- **`SyncMerger`**: drawings beside the markers, in the server's form (the
+  key of the session's video in place of the source, `syncMediaKey()`).
+  `setDrawingSources()` says which open files are the session's videos;
+  drawings on others are kept back. Our own change coming back with nothing
+  newer behind it is taken as the server wrote it. `hasDrawings()` is false
+  for an older server.
+- **`SyncModel`**: `PUT`/`DELETE .../drawings/<id>`, and the annotations
+  observed. **App**: `_syncDrawingSourcesUpdate()` matches the open files
+  to the session's videos; `_reviewUserUpdate()` follows the sign-in.
+- **UI**: the byline under each marker, the **Drawings** section of the
+  Review tool, the editor named on the notes over the video, and the name
+  tags on the drawings (`Viewport`).
+- **`server.js`**: the `drawings` and `deleted_drawings` tables (schema 4),
+  `stamp()`, the drawing requests and events, `drawings` in the session list,
+  requests of up to 4 MB. **Portal and admin page**: a Drawings column.
+- **Docs:** `server/README.md`, `docs/reviews.html`,
+  `docs/review-format.html`, `docs/lan-setup.html`, `ChangeLog.md`.
+
+**Verification.** The server tests pass, 51 of 51, seven of them new
+(`test/drawings.test.js`). `djv-test` passes, with the new
+`SyncModelTest::_attribution` and `_drawings`,
+`AnnotationsModelTest::_users` and `_remote`, and the user cases of
+`MarkersModelTest`. The live part ran three times against a local
+server 2.3.0: two clients exchange a marker and a drawing, see the
+signed-in user as the author and as who changed it, and erase each other's
+drawing. Still to check: two PCs on the dev server, by hand.

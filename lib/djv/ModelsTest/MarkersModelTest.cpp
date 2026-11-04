@@ -8,6 +8,8 @@
 #include <ftk/Core/Assert.h>
 #include <ftk/Core/Format.h>
 
+#include <algorithm>
+
 namespace djv
 {
     namespace models_tests
@@ -75,6 +77,31 @@ namespace djv
             FTK_CHECK("Pacing feels slow here." == model->getMarkers()[1].text);
             FTK_CHECK("Intro" == model->getMarkers()[1].name);
 
+            // Who wrote a marker is the user it was made as; who changed it
+            // last is the user it was changed as, and the author stays.
+            FTK_CHECK(models::reviewAuthor() == model->getUser());
+            model->setUser("anna");
+            const std::string annas = model->add(std::nullopt, std::string(), "Anna's.");
+            model->setUser("bob");
+            model->update(annas, "Anna's, reworded by Bob.");
+            auto i = std::find_if(
+                model->getMarkers().begin(),
+                model->getMarkers().end(),
+                [&annas](const models::ReviewMarker& value) { return value.id == annas; });
+            FTK_CHECK(i != model->getMarkers().end());
+            FTK_CHECK("anna" == i->author);
+            FTK_CHECK("bob" == i->modifiedBy);
+            FTK_CHECK(!i->modified.empty());
+            model->setUser("carol");
+            model->updateColor(annas, ftk::Color4F(1.F, 0.F, 0.F, 1.F));
+            i = std::find_if(
+                model->getMarkers().begin(),
+                model->getMarkers().end(),
+                [&annas](const models::ReviewMarker& value) { return value.id == annas; });
+            FTK_CHECK("anna" == i->author);
+            FTK_CHECK("carol" == i->modifiedBy);
+            model->remove(annas);
+
             // Removing by identifier leaves the other markers alone.
             model->remove(id);
             FTK_CHECK(2 == model->getMarkers().size());
@@ -110,6 +137,8 @@ namespace djv
             marker.text = "Line one.\nLine two.";
             marker.author = "reviewer";
             marker.created = "2026-07-26T18:05:00Z";
+            marker.modified = "2026-07-27T09:00:00Z";
+            marker.modifiedBy = "editor";
 
             const nlohmann::json json = marker;
             const auto out = json.get<models::ReviewMarker>();

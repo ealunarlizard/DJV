@@ -448,6 +448,8 @@ namespace djv
 
             void _syncLocalMediaUpdate();
             void _syncMediaUpdate(const std::optional<models::SyncMedia>&);
+            void _syncDrawingSourcesUpdate();
+            void _reviewUserUpdate();
             //! Where the previous run's log was moved to; see ftk::App.
             std::filesystem::path _previousLogPath() const;
             //! What the session amounted to, written to the log as it ends.

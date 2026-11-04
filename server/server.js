@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright Contributors to the DJV project.
 
-// The DJV sync server: shares the markers of a review between the people
-// who have it open, live, along with the media file they are about.
+// The DJV sync server: shares the markers and the drawings of a review
+// between the people who have it open, live, along with the media file they
+// are about.
 //
-// A session is a set of markers and, optionally, the media they belong to.
-// A client reads the session's state, then follows its event stream; it
-// sends each change it makes, and the server numbers the changes as they
-// arrive and passes them to everyone. The last change the server receives to
-// a marker is the one that stands, and every client applies the changes in
-// the server's order, so they all end up with the same markers. Deleted
-// markers are remembered, so a client that was away learns of the deletion
-// rather than sending the marker back.
+// A session is a set of markers and drawings and, optionally, the media they
+// belong to. A drawing is one person's strokes on one frame of one of the
+// session's videos. A client reads the session's state, then follows its
+// event stream; it sends each change it makes, and the server numbers the
+// changes as they arrive and passes them to everyone. The last change the
+// server receives to a marker or a drawing is the one that stands, and every
+// client applies the changes in the server's order, so they all end up with
+// the same markers and drawings. Deleted ones are remembered, so a client
+// that was away learns of the deletion rather than sending them back.
+//
+// The server writes into each marker and drawing who made it and who changed
+// it last, from the user signed in, rather than taking a client's word for
+// it (stamp()): that is how a shared review says who wrote what.
 //
 // The sessions are kept in one SQLite file. Every change is written there
 // before the server answers it, so a change a client was told was taken
@@ -76,8 +82,9 @@ const MARKER_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
 // What a client can ask for in one request, and how many changes are kept
 // for a client catching up. One that is further behind reads the state
-// again.
-const MAX_BODY = 1024 * 1024;
+// again. A drawing is sent whole with each stroke, and a busy frame's
+// strokes run to more than a marker ever does.
+const MAX_BODY = 4 * 1024 * 1024;
 const MAX_LOG = 1000;
 
 // How a video is uploaded: in pieces of this size, each one its own
@@ -111,9 +118,9 @@ const PACKAGE_PATTERN = /^djv-(\d[A-Za-z0-9.-]*)-([a-z0-9]+)-([a-z0-9_]+)\.([a-z
 // The layout of the database, numbered so that a later server can tell an
 // older file and bring it up to date.
 // Version 2 adds the session tokens; version 3 who each session is for
-// (session_info) and the unfinished uploads. Both only add tables, which
-// "IF NOT EXISTS" brings into an older file.
-const SCHEMA_VERSION = 3;
+// (session_info) and the unfinished uploads; version 4 the drawings. Each
+// only adds tables, which "IF NOT EXISTS" brings into an older file.
+const SCHEMA_VERSION = 4;
 
 class HttpError extends Error {
   // What else the client is told, beside the message: a code it can act
@@ -272,6 +279,21 @@ class Store {
         rev     INTEGER NOT NULL,
         PRIMARY KEY (session, id)
       );
+      -- The drawings, kept as the markers are, in tables of their own: a
+      -- DJV that knows only markers reads the markers and the deleted
+      -- markers, and must not be handed a drawing as either.
+      CREATE TABLE IF NOT EXISTS drawings (
+        session TEXT NOT NULL,
+        id      TEXT NOT NULL,
+        data    TEXT NOT NULL,
+        PRIMARY KEY (session, id)
+      );
+      CREATE TABLE IF NOT EXISTS deleted_drawings (
+        session TEXT NOT NULL,
+        id      TEXT NOT NULL,
+        rev     INTEGER NOT NULL,
+        PRIMARY KEY (session, id)
+      );
       CREATE TABLE IF NOT EXISTS events (
         session TEXT NOT NULL,
         rev     INTEGER NOT NULL,
@@ -328,6 +350,8 @@ class Store {
       removeSessionInfo: db.prepare('DELETE FROM session_info WHERE name = ?'),
       removeSessionMarkers: db.prepare('DELETE FROM markers WHERE session = ?'),
       removeSessionDeleted: db.prepare('DELETE FROM deleted WHERE session = ?'),
+      removeSessionDrawings: db.prepare('DELETE FROM drawings WHERE session = ?'),
+      removeSessionDeletedDrawings: db.prepare('DELETE FROM deleted_drawings WHERE session = ?'),
       removeSessionEvents: db.prepare('DELETE FROM events WHERE session = ?'),
       upload: db.prepare('SELECT id, username, path, size, received, created, updated FROM uploads WHERE id = ?'),
       uploads: db.prepare('SELECT id, username, path, size, received, created, updated FROM uploads ORDER BY created'),
@@ -351,6 +375,16 @@ class Store {
         INSERT INTO deleted (session, id, rev) VALUES (?, ?, ?)
         ON CONFLICT (session, id) DO UPDATE SET rev = excluded.rev`),
       removeDeleted: db.prepare('DELETE FROM deleted WHERE session = ? AND id = ?'),
+      drawings: db.prepare('SELECT data FROM drawings WHERE session = ? ORDER BY rowid'),
+      deletedDrawings: db.prepare('SELECT id, rev FROM deleted_drawings WHERE session = ?'),
+      putDrawing: db.prepare(`
+        INSERT INTO drawings (session, id, data) VALUES (?, ?, ?)
+        ON CONFLICT (session, id) DO UPDATE SET data = excluded.data`),
+      removeDrawing: db.prepare('DELETE FROM drawings WHERE session = ? AND id = ?'),
+      putDeletedDrawing: db.prepare(`
+        INSERT INTO deleted_drawings (session, id, rev) VALUES (?, ?, ?)
+        ON CONFLICT (session, id) DO UPDATE SET rev = excluded.rev`),
+      removeDeletedDrawing: db.prepare('DELETE FROM deleted_drawings WHERE session = ? AND id = ?'),
       putEvent: db.prepare('INSERT INTO events (session, rev, data) VALUES (?, ?, ?)'),
       trimEvents: db.prepare('DELETE FROM events WHERE session = ? AND rev <= ?'),
       putToken: db.prepare('INSERT INTO tokens (hash, username, client, created, used, expires) VALUES (?, ?, ?, ?, ?, ?)'),
@@ -450,6 +484,8 @@ class Store {
       s.removeSessionInfo.run(name);
       s.removeSessionMarkers.run(name);
       s.removeSessionDeleted.run(name);
+      s.removeSessionDrawings.run(name);
+      s.removeSessionDeletedDrawings.run(name);
       s.removeSessionEvents.run(name);
     });
   }
@@ -500,6 +536,13 @@ class Store {
     for (const { id, rev } of this.statements.deleted.all(name)) {
       session.deleted.set(id, rev);
     }
+    for (const { data } of this.statements.drawings.all(name)) {
+      const drawing = JSON.parse(data);
+      session.drawings.set(drawing.id, drawing);
+    }
+    for (const { id, rev } of this.statements.deletedDrawings.all(name)) {
+      session.deletedDrawings.set(id, rev);
+    }
     session.log = this.statements.events.all(name).map(({ data }) => JSON.parse(data));
     return session;
   }
@@ -517,6 +560,12 @@ class Store {
       } else if (event.type === 'delete') {
         s.removeMarker.run(name, event.id);
         s.putDeleted.run(name, event.id, event.rev);
+      } else if (event.type === 'upsert-drawing') {
+        s.putDrawing.run(name, event.drawing.id, JSON.stringify(event.drawing));
+        s.removeDeletedDrawing.run(name, event.drawing.id);
+      } else if (event.type === 'delete-drawing') {
+        s.removeDrawing.run(name, event.id);
+        s.putDeletedDrawing.run(name, event.id, event.rev);
       }
       s.putEvent.run(name, event.rev, JSON.stringify(event));
       s.trimEvents.run(name, event.rev - MAX_LOG);
@@ -561,6 +610,10 @@ class Session {
     this.markers = new Map();
     // The revision each marker was deleted at, by identifier.
     this.deleted = new Map();
+    // The drawings, and the revision each deleted one was deleted at, by
+    // identifier, as for the markers.
+    this.drawings = new Map();
+    this.deletedDrawings = new Map();
     // The latest changes, oldest first, for a client catching up.
     this.log = [];
     this.clients = new Set();
@@ -576,6 +629,10 @@ class Session {
       media: this.media,
       markers: [...this.markers.values()],
       deleted: [...this.deleted.keys()],
+      // Always there, even empty: it is how DJV tells that this server
+      // shares drawings.
+      drawings: [...this.drawings.values()],
+      deletedDrawings: [...this.deletedDrawings.keys()],
     };
   }
 
@@ -607,6 +664,12 @@ class Session {
     } else if (out.type === 'delete') {
       this.markers.delete(out.id);
       this.deleted.set(out.id, this.rev);
+    } else if (out.type === 'upsert-drawing') {
+      this.drawings.set(out.drawing.id, out.drawing);
+      this.deletedDrawings.delete(out.drawing.id);
+    } else if (out.type === 'delete-drawing') {
+      this.drawings.delete(out.id);
+      this.deletedDrawings.set(out.id, this.rev);
     } else if (out.type === 'media') {
       this.media = out.media;
     }
@@ -619,6 +682,76 @@ class Session {
     }
     return out;
   }
+}
+
+// The keys of a marker or a drawing that the server fills in itself: who
+// made it and when, and who changed it last and when.
+const STAMP_KEYS = ['author', 'created', 'modified', 'modifiedBy'];
+
+// A value as JSON with the keys of every object in order, so that two
+// values with the same content give the same text.
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+// Whether two markers, or two drawings, say the same thing, whoever is said
+// to have made them.
+function sameContent(a, b) {
+  const strip = (item) => Object.fromEntries(Object.entries(item).filter(([key]) => !STAMP_KEYS.includes(key)));
+  return canonicalJson(strip(a)) === canonicalJson(strip(b));
+}
+
+// The time as DJV writes it (models::timestamp()): to the second, in UTC.
+function stampTime() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+// A marker or a drawing as the server keeps it, after the given user sent
+// it. The user signed in is the one the change is put down to, whatever the
+// client wrote: a client's clock and its idea of who is at it are its own,
+// and a review that says who wrote what has to be right about it.
+//
+// - Something new is the user's, made when the client says, or now.
+// - Something changed keeps who made it and when, and is marked as changed
+//   now, by the user.
+// - Something sent again unchanged -- by a DJV that reads less of it than
+//   this server keeps, say -- keeps what it had: sending it did not change
+//   it.
+function stamp(previous, item, username) {
+  const out = { ...item };
+  const now = stampTime();
+  if (!previous) {
+    out.author = username;
+    out.created = typeof item.created === 'string' && item.created ? item.created : now;
+    if (typeof item.modified === 'string' && item.modified) {
+      out.modifiedBy = username;
+    } else {
+      delete out.modified;
+      delete out.modifiedBy;
+    }
+    return out;
+  }
+  out.author = previous.author || username;
+  out.created = previous.created || (typeof item.created === 'string' && item.created) || now;
+  if (sameContent(previous, item)) {
+    for (const key of ['modified', 'modifiedBy']) {
+      if (previous[key]) {
+        out[key] = previous[key];
+      } else {
+        delete out[key];
+      }
+    }
+  } else {
+    out.modified = now;
+    out.modifiedBy = username;
+  }
+  return out;
 }
 
 function writeEvent(res, event) {
@@ -1217,6 +1350,7 @@ export function createSyncServer(options = {}) {
       session: session.name,
       rev: session.rev,
       markers: session.markers.size,
+      drawings: session.drawings.size,
       clients: session.clients.size,
       media: media?.name ?? null,
       description: info?.description ?? '',
@@ -1861,25 +1995,42 @@ export function createSyncServer(options = {}) {
       }
     }
 
-    if (parts.length === 5 && parts[3] === 'markers') {
+    // The markers and the drawings take the same requests, each into its
+    // own collection and with its own events.
+    const kinds = {
+      markers: {
+        key: 'marker', what: 'marker', items: session.markers, upsert: 'upsert', delete: 'delete',
+      },
+      drawings: {
+        key: 'drawing', what: 'drawing', items: session.drawings, upsert: 'upsert-drawing', delete: 'delete-drawing',
+      },
+    };
+    const kind = parts.length === 5 ? kinds[parts[3]] : undefined;
+    if (kind && Object.hasOwn(kinds, parts[3])) {
       const id = parts[4];
       if (!MARKER_ID_PATTERN.test(id)) {
-        throw new HttpError(400, 'The marker identifier can only have letters, digits, ".", "_" and "-".');
+        throw new HttpError(400, `The ${kind.what} identifier can only have letters, digits, ".", "_" and "-".`);
       }
       if (req.method === 'PUT') {
         const body = await readJson(req);
-        const marker = body?.marker;
-        if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
-          throw new HttpError(400, 'The request has no marker.');
+        const item = body?.[kind.key];
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          throw new HttpError(400, `The request has no ${kind.what}.`);
         }
-        if (marker.id !== undefined && marker.id !== id) {
-          throw new HttpError(400, 'The marker identifier does not match the address.');
+        if (item.id !== undefined && item.id !== id) {
+          throw new HttpError(400, `The ${kind.what} identifier does not match the address.`);
+        }
+        // A drawing says which of the session's videos it is on, by the
+        // path the session keeps for it; without one it is on nothing.
+        if (kind.key === 'drawing' &&
+          (typeof item.media !== 'string' || item.media === '' || item.media.length > MAX_MEDIA_PATH)) {
+          throw new HttpError(400, 'The drawing does not say which video it is on.');
         }
         const event = session.apply({
-          type: 'upsert',
+          type: kind.upsert,
           clientId: typeof body.clientId === 'string' ? body.clientId : '',
           user: user.username,
-          marker: { ...marker, id },
+          [kind.key]: stamp(kind.items.get(id), { ...item, id }, user.username),
         }, store);
         sendJson(res, 200, { rev: event.rev });
         return;
@@ -1888,7 +2039,7 @@ export function createSyncServer(options = {}) {
         // Deleting what is not there is still a change: the client that
         // asked may be the only one that had it.
         const event = session.apply({
-          type: 'delete',
+          type: kind.delete,
           clientId: url.searchParams.get('clientId') ?? '',
           user: user.username,
           id,

@@ -3,6 +3,7 @@
 
 #include <djv/Models/SyncModel.h>
 
+#include <djv/Models/AnnotationsModel.h>
 #include <djv/Models/MarkersModel.h>
 #include <djv/Models/NetworkDrive.h>
 
@@ -279,6 +280,52 @@ namespace djv
                 }
                 return out;
             }
+
+            //! A drawing as the server keeps it. The merger holds drawings in
+            //! that form already, with the session's key for the video in
+            //! the source's place; on the wire it is called "media", so that
+            //! it cannot be taken for a source on this PC.
+            nlohmann::json drawingToJson(const ReviewAnnotation& value)
+            {
+                nlohmann::json out = value;
+                out.erase("sourceId");
+                out["media"] = value.sourceId;
+                return out;
+            }
+
+            //! Read a drawing from the server, or nothing when it cannot be
+            //! read: a newer DJV may draw in a way this one does not know.
+            std::optional<ReviewAnnotation> drawingFromJson(const nlohmann::json& json)
+            {
+                std::optional<ReviewAnnotation> out;
+                try
+                {
+                    if (json.is_object())
+                    {
+                        nlohmann::json tmp = json;
+                        tmp["sourceId"] = jsonText(json, "media");
+                        tmp.erase("media");
+                        const ReviewAnnotation value = tmp.get<ReviewAnnotation>();
+                        if (!value.id.empty() && !value.sourceId.empty())
+                        {
+                            out = value;
+                        }
+                    }
+                }
+                catch (const std::exception&)
+                {}
+                return out;
+            }
+        }
+
+        std::string syncMediaKey(const SyncMedia& value)
+        {
+            return !value.path.empty() ? value.path : value.pathAbsolute;
+        }
+
+        std::string syncMediaKey(const SyncMediaFile& value)
+        {
+            return !value.path.empty() ? value.path : value.pathAbsolute;
         }
 
         std::vector<std::string> parseSyncEvents(
@@ -335,6 +382,7 @@ namespace djv
         struct SyncMerger::Private
         {
             std::weak_ptr<MarkersModel> markersModel;
+            std::weak_ptr<AnnotationsModel> annotationsModel;
             std::string clientId;
             int64_t revision = 0;
             bool hasSnapshot = false;
@@ -347,6 +395,25 @@ namespace djv
             //! The changes sent and not yet seen coming back, by marker.
             std::map<std::string, int> pending;
 
+            //! The drawings as the server was last told or told us, by
+            //! identifier, in the server's form: the source is the
+            //! session's key for the video (see syncMediaKey()). These
+            //! include the drawings on videos that are not open here, which
+            //! wait for the video.
+            std::map<std::string, ReviewAnnotation> knownDrawings;
+
+            //! The changes sent and not yet seen coming back, by drawing.
+            std::map<std::string, int> pendingDrawings;
+
+            //! The open files the session's drawings are on, both ways:
+            //! the key of the video for each source, and the source for
+            //! each key.
+            std::map<std::string, std::string> sourceToMedia;
+            std::map<std::string, std::string> mediaToSource;
+
+            //! Whether the server shares drawings.
+            bool hasDrawings = false;
+
             //! The session's media, and the media this client has open.
             //! The session's is only ever what the server said: the last
             //! media it receives stands, as for a marker, so a change from
@@ -357,10 +424,12 @@ namespace djv
 
         void SyncMerger::_init(
             const std::shared_ptr<MarkersModel>& markersModel,
+            const std::shared_ptr<AnnotationsModel>& annotationsModel,
             const std::string& clientId)
         {
             FTK_P();
             p.markersModel = markersModel;
+            p.annotationsModel = annotationsModel;
             p.clientId = clientId;
         }
 
@@ -375,8 +444,16 @@ namespace djv
             const std::shared_ptr<MarkersModel>& markersModel,
             const std::string& clientId)
         {
+            return create(markersModel, nullptr, clientId);
+        }
+
+        std::shared_ptr<SyncMerger> SyncMerger::create(
+            const std::shared_ptr<MarkersModel>& markersModel,
+            const std::shared_ptr<AnnotationsModel>& annotationsModel,
+            const std::string& clientId)
+        {
             auto out = std::shared_ptr<SyncMerger>(new SyncMerger);
-            out->_init(markersModel, clientId);
+            out->_init(markersModel, annotationsModel, clientId);
             return out;
         }
 
@@ -476,8 +553,11 @@ namespace djv
                 }
             }
 
-            // What is left differs from the server: the markers only this
-            // client has, and those with a change on its way.
+            _snapshotDrawings(json);
+
+            // What is left differs from the server: the markers and the
+            // drawings only this client has, and those with a change on its
+            // way.
             p.hasSnapshot = true;
             out = _diff();
 
@@ -492,6 +572,77 @@ namespace djv
                 out.push_back(op);
             }
             return out;
+        }
+
+        void SyncMerger::_snapshotDrawings(const nlohmann::json& json)
+        {
+            FTK_P();
+            // A server that shares drawings says so with the list, empty or
+            // not. An older one has none to give, and would refuse the
+            // drawings sent to it one by one.
+            p.hasDrawings = json.contains("drawings") && json.at("drawings").is_array();
+            p.knownDrawings.clear();
+            auto annotationsModel = p.annotationsModel.lock();
+            if (!annotationsModel || !p.hasDrawings)
+            {
+                return;
+            }
+
+            std::map<std::string, ReviewAnnotation> server;
+            for (const auto& item : json.at("drawings"))
+            {
+                if (const auto drawing = drawingFromJson(item))
+                {
+                    server[drawing->id] = drawing.value();
+                }
+            }
+            std::map<std::string, bool> deleted;
+            if (json.contains("deletedDrawings") && json.at("deletedDrawings").is_array())
+            {
+                for (const auto& item : json.at("deletedDrawings"))
+                {
+                    if (item.is_string())
+                    {
+                        deleted[item.get<std::string>()] = true;
+                    }
+                }
+            }
+
+            std::map<std::string, ReviewAnnotation> localById;
+            for (const auto& annotation : annotationsModel->getAnnotations())
+            {
+                localById[annotation.id] = annotation;
+            }
+
+            // As for the markers. A drawing on a video that is not open here
+            // is only kept, for when it is.
+            for (const auto& i : server)
+            {
+                if (p.pendingDrawings.find(i.first) != p.pendingDrawings.end())
+                {
+                    continue;
+                }
+                p.knownDrawings[i.first] = i.second;
+                if (const auto local = _toLocal(i.second))
+                {
+                    const auto j = localById.find(i.first);
+                    if (j == localById.end() || j->second != local.value())
+                    {
+                        annotationsModel->upsert(local.value());
+                    }
+                }
+            }
+            for (const auto& i : deleted)
+            {
+                if (p.pendingDrawings.find(i.first) != p.pendingDrawings.end())
+                {
+                    continue;
+                }
+                if (localById.find(i.first) != localById.end())
+                {
+                    annotationsModel->remove(i.first);
+                }
+            }
         }
 
         bool SyncMerger::event(const nlohmann::json& json)
@@ -523,6 +674,12 @@ namespace djv
                 return true;
             }
 
+            if ("upsert-drawing" == type || "delete-drawing" == type)
+            {
+                _eventDrawing(json, type);
+                return true;
+            }
+
             std::string id;
             ReviewMarker marker;
             if ("upsert" == type)
@@ -546,13 +703,23 @@ namespace djv
                 return true;
             }
 
-            // Our own change coming back: the server has it now.
+            // Our own change coming back: the server has it now. When it is
+            // the last one on its way, the server's version is taken: the
+            // server writes in who made the marker and who changed it, and
+            // nothing newer is waiting here to be sent over it. The known
+            // state is set first, so the change the model reports finds
+            // nothing to send.
             if (json.value("clientId", std::string()) == p.clientId)
             {
                 const auto i = p.pending.find(id);
                 if (i != p.pending.end() && --i->second <= 0)
                 {
                     p.pending.erase(i);
+                    if ("upsert" == type)
+                    {
+                        p.known[id] = marker;
+                        markersModel->upsert(marker);
+                    }
                 }
                 return true;
             }
@@ -577,6 +744,71 @@ namespace djv
             return true;
         }
 
+        void SyncMerger::_eventDrawing(const nlohmann::json& json, const std::string& type)
+        {
+            FTK_P();
+            auto annotationsModel = p.annotationsModel.lock();
+            if (!annotationsModel || !p.hasDrawings)
+            {
+                return;
+            }
+            std::string id;
+            std::optional<ReviewAnnotation> drawing;
+            if ("upsert-drawing" == type)
+            {
+                drawing = drawingFromJson(json.contains("drawing") ? json.at("drawing") : nlohmann::json());
+                if (!drawing.has_value())
+                {
+                    return;
+                }
+                id = drawing->id;
+            }
+            else
+            {
+                id = json.value("id", std::string());
+            }
+            if (id.empty())
+            {
+                return;
+            }
+
+            // As for a marker: ours coming back, theirs over a change of ours
+            // still on its way, or theirs.
+            bool apply = true;
+            if (json.value("clientId", std::string()) == p.clientId)
+            {
+                const auto i = p.pendingDrawings.find(id);
+                apply = false;
+                if (i != p.pendingDrawings.end() && --i->second <= 0)
+                {
+                    p.pendingDrawings.erase(i);
+                    apply = drawing.has_value();
+                }
+            }
+            else if (p.pendingDrawings.find(id) != p.pendingDrawings.end())
+            {
+                apply = false;
+            }
+            if (!apply)
+            {
+                return;
+            }
+
+            if (drawing.has_value())
+            {
+                p.knownDrawings[id] = drawing.value();
+                if (const auto local = _toLocal(drawing.value()))
+                {
+                    annotationsModel->upsert(local.value());
+                }
+            }
+            else
+            {
+                p.knownDrawings.erase(id);
+                annotationsModel->remove(id);
+            }
+        }
+
         std::vector<SyncOp> SyncMerger::localChanged()
         {
             FTK_P();
@@ -590,10 +822,14 @@ namespace djv
         void SyncMerger::dropped(const SyncOp& op)
         {
             FTK_P();
-            const auto i = p.pending.find(op.id);
-            if (i != p.pending.end() && --i->second <= 0)
+            auto& pending =
+                SyncOp::Type::PutDrawing == op.type || SyncOp::Type::DeleteDrawing == op.type ?
+                p.pendingDrawings :
+                p.pending;
+            const auto i = pending.find(op.id);
+            if (i != pending.end() && --i->second <= 0)
             {
-                p.pending.erase(i);
+                pending.erase(i);
             }
         }
 
@@ -626,7 +862,74 @@ namespace djv
             return out;
         }
 
+        const std::map<std::string, std::string>& SyncMerger::getDrawingSources() const
+        {
+            return _p->sourceToMedia;
+        }
+
+        std::vector<SyncOp> SyncMerger::setDrawingSources(const std::map<std::string, std::string>& value)
+        {
+            FTK_P();
+            if (value == p.sourceToMedia)
+            {
+                return {};
+            }
+            p.sourceToMedia = value;
+            p.mediaToSource.clear();
+            for (const auto& i : value)
+            {
+                // A video open twice gets the session's drawings once, on
+                // the first of them.
+                p.mediaToSource.insert({ i.second, i.first });
+            }
+            auto annotationsModel = p.annotationsModel.lock();
+            if (!annotationsModel || !p.hasSnapshot || !p.hasDrawings)
+            {
+                return {};
+            }
+
+            // The session's drawings on a video that is open now, and was
+            // not, join the drawings. A drawing with a change of ours on its
+            // way is already the latest.
+            std::map<std::string, ReviewAnnotation> localById;
+            for (const auto& annotation : annotationsModel->getAnnotations())
+            {
+                localById[annotation.id] = annotation;
+            }
+            for (const auto& i : p.knownDrawings)
+            {
+                if (p.pendingDrawings.find(i.first) != p.pendingDrawings.end())
+                {
+                    continue;
+                }
+                if (const auto local = _toLocal(i.second))
+                {
+                    const auto j = localById.find(i.first);
+                    if (j == localById.end() || j->second != local.value())
+                    {
+                        annotationsModel->upsert(local.value());
+                    }
+                }
+            }
+
+            // And what was drawn on it here before goes to the session.
+            return _diff();
+        }
+
+        bool SyncMerger::hasDrawings() const
+        {
+            return _p->hasDrawings;
+        }
+
         std::vector<SyncOp> SyncMerger::_diff()
+        {
+            std::vector<SyncOp> out = _diffMarkers();
+            const std::vector<SyncOp> drawings = _diffDrawings();
+            out.insert(out.end(), drawings.begin(), drawings.end());
+            return out;
+        }
+
+        std::vector<SyncOp> SyncMerger::_diffMarkers()
         {
             FTK_P();
             std::vector<SyncOp> out;
@@ -667,6 +970,88 @@ namespace djv
                 {
                     ++i;
                 }
+            }
+            return out;
+        }
+
+        std::vector<SyncOp> SyncMerger::_diffDrawings()
+        {
+            FTK_P();
+            std::vector<SyncOp> out;
+            auto annotationsModel = p.annotationsModel.lock();
+            if (!annotationsModel || !p.hasDrawings)
+            {
+                return out;
+            }
+            // Every drawing here counts as present, shared or not: one that
+            // is here on a source that is not one of the session's videos
+            // was not deleted.
+            std::map<std::string, bool> present;
+            for (const auto& annotation : annotationsModel->getAnnotations())
+            {
+                present[annotation.id] = true;
+                const auto wire = _toWire(annotation);
+                if (!wire.has_value())
+                {
+                    continue;
+                }
+                const auto i = p.knownDrawings.find(annotation.id);
+                if (i == p.knownDrawings.end() || i->second != wire.value())
+                {
+                    SyncOp op;
+                    op.type = SyncOp::Type::PutDrawing;
+                    op.id = annotation.id;
+                    op.drawing = drawingToJson(wire.value());
+                    out.push_back(op);
+                    p.knownDrawings[annotation.id] = wire.value();
+                    ++p.pendingDrawings[annotation.id];
+                }
+            }
+            // A drawing the session has and this client does not was
+            // deleted here -- unless it is on a video that is not open
+            // here, which this client cannot have deleted.
+            for (auto i = p.knownDrawings.begin(); i != p.knownDrawings.end();)
+            {
+                if (present.find(i->first) == present.end() &&
+                    p.mediaToSource.find(i->second.sourceId) != p.mediaToSource.end())
+                {
+                    SyncOp op;
+                    op.type = SyncOp::Type::DeleteDrawing;
+                    op.id = i->first;
+                    out.push_back(op);
+                    ++p.pendingDrawings[i->first];
+                    i = p.knownDrawings.erase(i);
+                }
+                else
+                {
+                    ++i;
+                }
+            }
+            return out;
+        }
+
+        std::optional<ReviewAnnotation> SyncMerger::_toWire(const ReviewAnnotation& value) const
+        {
+            FTK_P();
+            std::optional<ReviewAnnotation> out;
+            const auto i = p.sourceToMedia.find(value.sourceId);
+            if (i != p.sourceToMedia.end())
+            {
+                out = value;
+                out->sourceId = i->second;
+            }
+            return out;
+        }
+
+        std::optional<ReviewAnnotation> SyncMerger::_toLocal(const ReviewAnnotation& value) const
+        {
+            FTK_P();
+            std::optional<ReviewAnnotation> out;
+            const auto i = p.mediaToSource.find(value.sourceId);
+            if (i != p.mediaToSource.end())
+            {
+                out = value;
+                out->sourceId = i->second;
             }
             return out;
         }
@@ -975,13 +1360,19 @@ namespace djv
         {
             std::weak_ptr<ftk::Context> context;
             std::weak_ptr<MarkersModel> markersModel;
+            std::weak_ptr<AnnotationsModel> annotationsModel;
             std::shared_ptr<ftk::Observable<SyncStatus> > status;
             std::shared_ptr<ftk::Observable<std::optional<SyncMedia> > > media;
             std::optional<SyncMedia> localMedia;
+            std::map<std::string, std::string> drawingSources;
             std::optional<ReviewSync> sync;
             std::shared_ptr<SyncMerger> merger;
+            //! Whether this connection said that the server does not share
+            //! drawings, which it says once.
+            bool noDrawingsLogged = false;
             std::shared_ptr<ftk::Timer> timer;
             std::shared_ptr<ftk::ListObserver<ReviewMarker> > markersObserver;
+            std::shared_ptr<ftk::ListObserver<ReviewAnnotation> > annotationsObserver;
 
             std::shared_ptr<SyncShared> shared;
             std::thread streamThread;
@@ -1218,9 +1609,11 @@ namespace djv
                         op = shared->outbox.front();
                     }
 
-                    // The identifier came from a marker; it is ours or the
-                    // server's, but it goes into a path all the same.
+                    // The identifier came from a marker or a drawing; it is
+                    // ours or the server's, but it goes into a path all the
+                    // same.
                     const std::string markerPath = base + "/markers/" + httplib::encode_uri_component(op.id);
+                    const std::string drawingPath = base + "/drawings/" + httplib::encode_uri_component(op.id);
                     const std::string mediaPath = base + "/media";
                     const std::string clientQuery = "?clientId=" + httplib::encode_uri_component(clientId);
                     httplib::Result result;
@@ -1245,6 +1638,17 @@ namespace djv
                         result = client.Put(mediaPath, headers, body.dump(), "application/json");
                         break;
                     }
+                    case SyncOp::Type::PutDrawing:
+                    {
+                        nlohmann::json body;
+                        body["clientId"] = clientId;
+                        body["drawing"] = op.drawing;
+                        result = client.Put(drawingPath, headers, body.dump(), "application/json");
+                        break;
+                    }
+                    case SyncOp::Type::DeleteDrawing:
+                        result = client.Delete(drawingPath + clientQuery, headers);
+                        break;
                     }
 
                     if (result && result->status >= 200 && result->status < 300)
@@ -1271,6 +1675,8 @@ namespace djv
                         case SyncOp::Type::Put: msg.json["op"] = "put"; break;
                         case SyncOp::Type::Delete: msg.json["op"] = "delete"; break;
                         case SyncOp::Type::PutMedia: msg.json["op"] = "media"; break;
+                        case SyncOp::Type::PutDrawing: msg.json["op"] = "put-drawing"; break;
+                        case SyncOp::Type::DeleteDrawing: msg.json["op"] = "delete-drawing"; break;
                         }
                         msg.json["message"] = errorMessage(result);
                         std::unique_lock<std::mutex> lock(shared->mutex);
@@ -1300,11 +1706,13 @@ namespace djv
 
         void SyncModel::_init(
             const std::shared_ptr<ftk::Context>& context,
-            const std::shared_ptr<MarkersModel>& markersModel)
+            const std::shared_ptr<MarkersModel>& markersModel,
+            const std::shared_ptr<AnnotationsModel>& annotationsModel)
         {
             FTK_P();
             p.context = context;
             p.markersModel = markersModel;
+            p.annotationsModel = annotationsModel;
             p.status = ftk::Observable<SyncStatus>::create();
             p.media = ftk::Observable<std::optional<SyncMedia> >::create();
             p.timer = ftk::Timer::create(context);
@@ -1322,10 +1730,11 @@ namespace djv
 
         std::shared_ptr<SyncModel> SyncModel::create(
             const std::shared_ptr<ftk::Context>& context,
-            const std::shared_ptr<MarkersModel>& markersModel)
+            const std::shared_ptr<MarkersModel>& markersModel,
+            const std::shared_ptr<AnnotationsModel>& annotationsModel)
         {
             auto out = std::shared_ptr<SyncModel>(new SyncModel);
-            out->_init(context, markersModel);
+            out->_init(context, markersModel, annotationsModel);
             return out;
         }
 
@@ -1377,8 +1786,11 @@ namespace djv
             }
 
             p.sync = sync;
-            p.merger = SyncMerger::create(markersModel, generateId());
+            auto annotationsModel = p.annotationsModel.lock();
+            p.merger = SyncMerger::create(markersModel, annotationsModel, generateId());
             p.merger->setLocalMedia(p.localMedia);
+            p.merger->setDrawingSources(p.drawingSources);
+            p.noDrawingsLogged = false;
 
             p.shared = std::make_shared<SyncShared>();
             p.shared->running = true;
@@ -1401,21 +1813,26 @@ namespace djv
                 [this](const std::vector<ReviewMarker>&)
                 {
                     FTK_P();
-                    if (!p.merger || !p.shared)
+                    if (p.merger)
                     {
-                        return;
-                    }
-                    const auto ops = p.merger->localChanged();
-                    if (!ops.empty())
-                    {
-                        {
-                            std::unique_lock<std::mutex> lock(p.shared->mutex);
-                            p.shared->outbox.insert(p.shared->outbox.end(), ops.begin(), ops.end());
-                        }
-                        p.shared->cv.notify_all();
+                        _send(p.merger->localChanged());
                     }
                 },
                 ftk::ObserverAction::Suppress);
+            if (annotationsModel)
+            {
+                p.annotationsObserver = ftk::ListObserver<ReviewAnnotation>::create(
+                    annotationsModel->observeAnnotations(),
+                    [this](const std::vector<ReviewAnnotation>&)
+                    {
+                        FTK_P();
+                        if (p.merger)
+                        {
+                            _send(p.merger->localChanged());
+                        }
+                    },
+                    ftk::ObserverAction::Suppress);
+            }
 
             p.streamThread = std::thread(streamThread, p.shared);
             p.sendThread = std::thread(sendThread, p.shared);
@@ -1442,6 +1859,7 @@ namespace djv
             FTK_P();
             p.timer->stop();
             p.markersObserver.reset();
+            p.annotationsObserver.reset();
             if (p.shared)
             {
                 {
@@ -1513,6 +1931,19 @@ namespace djv
                 {
                     const auto snapshotOps = p.merger->snapshot(msg.json);
                     ops.insert(ops.end(), snapshotOps.begin(), snapshotOps.end());
+                    if (!p.merger->hasDrawings() && !p.annotationsModel.expired() && !p.noDrawingsLogged)
+                    {
+                        p.noDrawingsLogged = true;
+                        if (auto context = p.context.lock())
+                        {
+                            context->getLogSystem()->print(
+                                "djv::models::SyncModel",
+                                "The sync server shares the markers only, not the drawings: it is older "
+                                "than version 2.3. The drawings stay on this PC; update the server to "
+                                "share them.",
+                                ftk::LogType::Warning);
+                        }
+                    }
                     break;
                 }
                 case Inbound::Type::Event:
@@ -1532,9 +1963,24 @@ namespace djv
                         {
                             SyncOp op;
                             op.id = msg.json.value("id", std::string());
-                            op.type = "delete" == what ? SyncOp::Type::Delete : SyncOp::Type::Put;
+                            if ("put-drawing" == what)
+                            {
+                                op.type = SyncOp::Type::PutDrawing;
+                            }
+                            else if ("delete-drawing" == what)
+                            {
+                                op.type = SyncOp::Type::DeleteDrawing;
+                            }
+                            else
+                            {
+                                op.type = "delete" == what ? SyncOp::Type::Delete : SyncOp::Type::Put;
+                            }
                             p.merger->dropped(op);
-                            text = ftk::Format("The server did not take a change to marker {0}: {1}").
+                            const bool drawing =
+                                SyncOp::Type::PutDrawing == op.type ||
+                                SyncOp::Type::DeleteDrawing == op.type;
+                            text = ftk::Format("The server did not take a change to {0} {1}: {2}").
+                                arg(drawing ? "drawing" : "marker").
                                 arg(op.id).
                                 arg(message);
                         }
@@ -1564,15 +2010,37 @@ namespace djv
                 }
                 }
             }
-            if (!ops.empty())
-            {
-                {
-                    std::unique_lock<std::mutex> lock(p.shared->mutex);
-                    p.shared->outbox.insert(p.shared->outbox.end(), ops.begin(), ops.end());
-                }
-                p.shared->cv.notify_all();
-            }
+            _send(ops);
             p.media->setIfChanged(p.merger->getMedia());
+        }
+
+        void SyncModel::_send(const std::vector<SyncOp>& ops)
+        {
+            FTK_P();
+            if (ops.empty() || !p.shared)
+            {
+                return;
+            }
+            {
+                std::unique_lock<std::mutex> lock(p.shared->mutex);
+                p.shared->outbox.insert(p.shared->outbox.end(), ops.begin(), ops.end());
+            }
+            p.shared->cv.notify_all();
+        }
+
+        const std::map<std::string, std::string>& SyncModel::getDrawingSources() const
+        {
+            return _p->drawingSources;
+        }
+
+        void SyncModel::setDrawingSources(const std::map<std::string, std::string>& value)
+        {
+            FTK_P();
+            p.drawingSources = value;
+            if (p.merger)
+            {
+                _send(p.merger->setDrawingSources(value));
+            }
         }
 
         std::shared_ptr<ftk::IObservable<std::optional<SyncMedia> > > SyncModel::observeMedia() const

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace djv
 {
@@ -14,31 +15,113 @@ namespace djv
     {
         namespace
         {
-            //! A command that swaps the whole annotation list.
+            //! A change to one drawing: what it was and what it became, either
+            //! of them absent for a drawing that was added or removed.
+            struct AnnotationChange
+            {
+                std::string id;
+                std::optional<ReviewAnnotation> before;
+                std::optional<ReviewAnnotation> after;
+
+                //! Where the drawing was in the list, so that undoing its
+                //! removal puts it back in its place: the order of the
+                //! drawings is the order their strokes are drawn in.
+                size_t index = 0;
+            };
+
+            //! The changes that take one list of drawings to another, by
+            //! identifier.
+            std::vector<AnnotationChange> diffAnnotations(
+                const std::vector<ReviewAnnotation>& before,
+                const std::vector<ReviewAnnotation>& after)
+            {
+                std::vector<AnnotationChange> out;
+                for (size_t i = 0; i < before.size(); ++i)
+                {
+                    const auto j = std::find_if(
+                        after.begin(),
+                        after.end(),
+                        [&before, i](const ReviewAnnotation& value) { return value.id == before[i].id; });
+                    if (j == after.end())
+                    {
+                        out.push_back({ before[i].id, before[i], std::nullopt, i });
+                    }
+                    else if (*j != before[i])
+                    {
+                        out.push_back({ before[i].id, before[i], *j, i });
+                    }
+                }
+                for (size_t i = 0; i < after.size(); ++i)
+                {
+                    const auto j = std::find_if(
+                        before.begin(),
+                        before.end(),
+                        [&after, i](const ReviewAnnotation& value) { return value.id == after[i].id; });
+                    if (j == before.end())
+                    {
+                        out.push_back({ after[i].id, std::nullopt, after[i], i });
+                    }
+                }
+                return out;
+            }
+
+            //! Set each changed drawing to one side of its change, leaving
+            //! every other drawing as it is now.
+            std::vector<ReviewAnnotation> applyChanges(
+                std::vector<ReviewAnnotation> annotations,
+                const std::vector<AnnotationChange>& changes,
+                bool undo)
+            {
+                for (const auto& change : changes)
+                {
+                    const auto& target = undo ? change.before : change.after;
+                    const auto i = std::find_if(
+                        annotations.begin(),
+                        annotations.end(),
+                        [&change](const ReviewAnnotation& value) { return value.id == change.id; });
+                    if (target.has_value())
+                    {
+                        if (i != annotations.end())
+                        {
+                            *i = target.value();
+                        }
+                        else
+                        {
+                            annotations.insert(
+                                annotations.begin() + std::min(change.index, annotations.size()),
+                                target.value());
+                        }
+                    }
+                    else if (i != annotations.end())
+                    {
+                        annotations.erase(i);
+                    }
+                }
+                return annotations;
+            }
+
+            //! A command that changes some of the drawings.
             //!
-            //! Annotations are small -- a few hundred strokes at most -- so
-            //! snapshotting the list is simpler and safer than tracking
-            //! incremental edits, and it makes every operation undoable the same
-            //! way.
-            class SnapshotCommand : public ftk::ICommand
+            //! Only the drawings the user changed are recorded, before and
+            //! after, rather than the whole list. In a shared session other
+            //! people's drawings change underneath the history, and replaying
+            //! a snapshot of the whole list would take their changes back.
+            class ChangeCommand : public ftk::ICommand
             {
             public:
-                SnapshotCommand(
-                    const std::function<void(const std::vector<ReviewAnnotation>&)>& apply,
-                    const std::vector<ReviewAnnotation>& before,
-                    const std::vector<ReviewAnnotation>& after) :
+                ChangeCommand(
+                    const std::function<void(const std::vector<AnnotationChange>&, bool)>& apply,
+                    const std::vector<AnnotationChange>& changes) :
                     _apply(apply),
-                    _before(before),
-                    _after(after)
+                    _changes(changes)
                 {}
 
-                void exec() override { _apply(_after); }
-                void undo() override { _apply(_before); }
+                void exec() override { _apply(_changes, false); }
+                void undo() override { _apply(_changes, true); }
 
             private:
-                std::function<void(const std::vector<ReviewAnnotation>&)> _apply;
-                std::vector<ReviewAnnotation> _before;
-                std::vector<ReviewAnnotation> _after;
+                std::function<void(const std::vector<AnnotationChange>&, bool)> _apply;
+                std::vector<AnnotationChange> _changes;
             };
 
             //! The distance from a point to a segment.
@@ -90,6 +173,7 @@ namespace djv
         {
             std::shared_ptr<ftk::ObservableList<ReviewAnnotation> > annotations;
             std::shared_ptr<ftk::CommandStack> commandStack;
+            std::string user;
         };
 
         void AnnotationsModel::_init()
@@ -97,6 +181,7 @@ namespace djv
             FTK_P();
             p.annotations = ftk::ObservableList<ReviewAnnotation>::create();
             p.commandStack = ftk::CommandStack::create();
+            p.user = reviewAuthor();
         }
 
         AnnotationsModel::AnnotationsModel() :
@@ -123,20 +208,31 @@ namespace djv
             return _p->annotations;
         }
 
+        const std::string& AnnotationsModel::getUser() const
+        {
+            return _p->user;
+        }
+
+        void AnnotationsModel::setUser(const std::string& value)
+        {
+            _p->user = value;
+        }
+
         std::vector<ReviewStroke> AnnotationsModel::getStrokes(
             const std::string& sourceId,
             const OTIO_NS::RationalTime& time) const
         {
             FTK_P();
+            std::vector<ReviewStroke> out;
             for (const auto& annotation : p.annotations->get())
             {
                 if (annotation.sourceId == sourceId &&
                     sameTime(annotation.time, time))
                 {
-                    return annotation.strokes;
+                    out.insert(out.end(), annotation.strokes.begin(), annotation.strokes.end());
                 }
             }
-            return {};
+            return out;
         }
 
         void AnnotationsModel::setAnnotations(const std::vector<ReviewAnnotation>& value)
@@ -160,13 +256,18 @@ namespace djv
             const auto i = std::find_if(
                 annotations.begin(),
                 annotations.end(),
-                [&sourceId, &time](const ReviewAnnotation& value)
+                [&sourceId, &time, &p](const ReviewAnnotation& value)
                 {
-                    return value.sourceId == sourceId && sameTime(value.time, time);
+                    return
+                        value.sourceId == sourceId &&
+                        sameTime(value.time, time) &&
+                        value.author == p.user;
                 });
             if (i != annotations.end())
             {
                 i->strokes.push_back(stroke);
+                i->modified = timestamp();
+                i->modifiedBy = p.user;
             }
             else
             {
@@ -174,9 +275,10 @@ namespace djv
                 annotation.id = generateId();
                 annotation.sourceId = sourceId;
                 annotation.time = time;
-                // Attributed once, when the drawing on this frame starts: the
-                // strokes added to it afterwards belong to the same hand.
-                annotation.author = reviewAuthor();
+                // Attributed once, when the user's drawing on this frame
+                // starts: the strokes added to it afterwards are the same
+                // hand's, and someone else's go into a drawing of their own.
+                annotation.author = p.user;
                 annotation.created = timestamp();
                 annotation.strokes.push_back(stroke);
                 annotations.push_back(annotation);
@@ -208,7 +310,12 @@ namespace djv
                                 return strokeHit(stroke, pos, radius);
                             }),
                         strokes.end());
-                    changed = changed || strokes.size() != before;
+                    if (strokes.size() != before)
+                    {
+                        i->modified = timestamp();
+                        i->modifiedBy = p.user;
+                        changed = true;
+                    }
                 }
                 // Drop annotations that no longer hold anything, so they do not
                 // leave a phantom timeline marker.
@@ -253,6 +360,55 @@ namespace djv
             }
         }
 
+        void AnnotationsModel::removeAnnotation(const std::string& id)
+        {
+            FTK_P();
+            auto annotations = p.annotations->get();
+            const auto i = std::find_if(
+                annotations.begin(),
+                annotations.end(),
+                [&id](const ReviewAnnotation& value) { return value.id == id; });
+            if (i != annotations.end())
+            {
+                annotations.erase(i);
+                _push(annotations);
+            }
+        }
+
+        void AnnotationsModel::upsert(const ReviewAnnotation& annotation)
+        {
+            FTK_P();
+            auto annotations = p.annotations->get();
+            const auto i = std::find_if(
+                annotations.begin(),
+                annotations.end(),
+                [&annotation](const ReviewAnnotation& value) { return value.id == annotation.id; });
+            if (i != annotations.end())
+            {
+                *i = annotation;
+            }
+            else
+            {
+                annotations.push_back(annotation);
+            }
+            p.annotations->setIfChanged(annotations);
+        }
+
+        void AnnotationsModel::remove(const std::string& id)
+        {
+            FTK_P();
+            auto annotations = p.annotations->get();
+            const auto i = std::find_if(
+                annotations.begin(),
+                annotations.end(),
+                [&id](const ReviewAnnotation& value) { return value.id == id; });
+            if (i != annotations.end())
+            {
+                annotations.erase(i);
+                p.annotations->setIfChanged(annotations);
+            }
+        }
+
         void AnnotationsModel::clear()
         {
             FTK_P();
@@ -288,10 +444,17 @@ namespace djv
         void AnnotationsModel::_push(const std::vector<ReviewAnnotation>& value)
         {
             FTK_P();
-            p.commandStack->push(std::make_shared<SnapshotCommand>(
-                [this](const std::vector<ReviewAnnotation>& v) { _set(v); },
-                p.annotations->get(),
-                value));
+            const auto changes = diffAnnotations(p.annotations->get(), value);
+            if (changes.empty())
+            {
+                return;
+            }
+            p.commandStack->push(std::make_shared<ChangeCommand>(
+                [this](const std::vector<AnnotationChange>& changes, bool undo)
+                {
+                    _set(applyChanges(_p->annotations->get(), changes, undo));
+                },
+                changes));
         }
     }
 }

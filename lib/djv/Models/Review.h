@@ -75,12 +75,15 @@ namespace djv
         //! The current UTC time, ISO 8601 (e.g. "2026-07-26T18:05:00Z").
         DJV_MODELS_API std::string timestamp();
 
-        //! The current user, for attributing notes and annotations.
+        //! The current user, for attributing notes and annotations when no
+        //! one is signed in to a sync server.
         //!
         //! Taken from the environment -- USERNAME on Windows, USER elsewhere --
-        //! and empty when neither is set. DJV has no accounts and reviews are
-        //! passed from hand to hand, so this is a label rather than an identity:
-        //! it says who wrote a note when a session comes back from someone else.
+        //! and empty when neither is set. Reviews are passed from hand to
+        //! hand, so this is a label rather than an identity: it says who wrote
+        //! a note when a session comes back from someone else. Signed in, the
+        //! application attributes the work to the user name on the server
+        //! instead (see MarkersModel::setUser()).
         DJV_MODELS_API std::string reviewAuthor();
 
         //! A single file entry in a review.
@@ -169,8 +172,22 @@ namespace djv
 
             //! Who drew it, and when, ISO 8601. Both are optional: a document
             //! written before they existed simply leaves them empty.
+            //!
+            //! A frame holds one drawing per person: the strokes someone adds
+            //! go into their own drawing on that frame, so that two people
+            //! drawing on the same frame of a shared session each keep what
+            //! they drew, and each drawing says whose it is (see
+            //! AnnotationsModel::setUser()).
             std::string author;
             std::string created;
+
+            //! When the strokes last changed, ISO 8601, and who changed
+            //! them: the eraser can take strokes out of someone else's
+            //! drawing, and that is worth knowing. Both are empty until the
+            //! drawing is first changed after it was made. A sync server
+            //! fills them in itself, with the user who sent the change.
+            std::string modified;
+            std::string modifiedBy;
 
             std::vector<ReviewStroke> strokes;
 
@@ -218,6 +235,12 @@ namespace djv
             //! server receives the changes is what decides between two edits
             //! of the same marker, since two machines' clocks need not agree.
             std::string modified;
+
+            //! Who made the last change, empty until there is one. With the
+            //! author, it is how a shared review says who wrote what: a sync
+            //! server fills both in itself, from the user signed in, rather
+            //! than trusting what a client says (see server/README.md).
+            std::string modifiedBy;
 
             DJV_MODELS_API bool operator == (const ReviewMarker&) const;
             DJV_MODELS_API bool operator != (const ReviewMarker&) const;
